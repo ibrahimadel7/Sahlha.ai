@@ -1,7 +1,9 @@
-"""Embeddings via TF-IDF (offline, no API key needed).
+"""Embeddings: dense semantic vectors first, TF-IDF fallback when unavailable.
 
-Interface is swappable: `fit`, `embed`, `save/load` hide sklearn details.
-A sentence-transformer backend can replace this later without touching callers.
+`DenseEmbeddingModel` (MiniLM-L6-v2, 384-d, L2-normalized) is the primary backend.
+`TfidfEmbeddingModel` keeps the pipeline working offline / without torch.
+Callers use `get_embeddings()` which returns whichever backend initialized.
+A sentence-transformer/remote-embedding backend can replace this module wholesale.
 """
 from __future__ import annotations
 
@@ -9,45 +11,78 @@ import os
 import pickle
 
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import normalize
+
+DENSE_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-class EmbeddingModel:
+class DenseEmbeddingModel:
+    name = "dense:" + DENSE_MODEL_NAME
+
     def __init__(self) -> None:
-        self.vectorizer: TfidfVectorizer | None = None
+        from sentence_transformers import SentenceTransformer
 
-    def fit(self, texts: list[str]):
+        self._model = SentenceTransformer(DENSE_MODEL_NAME)
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        return np.asarray(
+            self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False),
+            dtype=np.float32)
+
+
+class TfidfEmbeddingModel:
+    name = "tfidf"
+
+    def __init__(self) -> None:
         from sahlha.app.config import settings
 
-        self.vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1, 2), stop_words="english")
+        self._path = settings.vectorizer_path
+        self.vectorizer = None
+
+    def fit(self, texts: list[str]):
+        from sklearn.feature_extraction.text import TfidfVectorizer
+
+        self.vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1, 2),
+                                          stop_words="english")
         mat = self.vectorizer.fit_transform(texts)
-        os.makedirs(os.path.dirname(os.path.abspath(settings.vectorizer_path)), exist_ok=True)
-        with open(settings.vectorizer_path, "wb") as fh:
+        os.makedirs(os.path.dirname(os.path.abspath(self._path)), exist_ok=True)
+        with open(self._path, "wb") as fh:
             pickle.dump(self.vectorizer, fh)
         return mat
 
     def load(self) -> bool:
-        from sahlha.app.config import settings
-
-        if os.path.exists(settings.vectorizer_path):
-            with open(settings.vectorizer_path, "rb") as fh:
+        if os.path.exists(self._path):
+            with open(self._path, "rb") as fh:
                 self.vectorizer = pickle.load(fh)
             return True
         return False
 
-    def embed(self, texts: list[str]):
+    def encode(self, texts: list[str]) -> np.ndarray:
+        from sklearn.preprocessing import normalize
+
         if self.vectorizer is None and not self.load():
             self.fit(texts)
         assert self.vectorizer is not None
-        return normalize(self.vectorizer.transform(texts))
-
-    def embed_query(self, query: str):
-        return self.embed([query])
+        return normalize(self.vectorizer.transform(texts)).toarray().astype(np.float32)
 
 
-_embeddings = EmbeddingModel()
+_embeddings = None
 
 
-def get_embeddings() -> EmbeddingModel:
+def get_embeddings():
+    """Dense unless the model can't load (offline/no torch) — then TF-IDF."""
+    global _embeddings
+    if _embeddings is not None:
+        return _embeddings
+    try:
+        _embeddings = DenseEmbeddingModel()
+    except Exception:
+        _embeddings = TfidfEmbeddingModel()
     return _embeddings
+
+
+def dense_available() -> bool:
+    try:
+        DenseEmbeddingModel()
+        return True
+    except Exception:
+        return False

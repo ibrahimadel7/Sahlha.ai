@@ -22,7 +22,16 @@ def pexels_available() -> bool:
 
 def build_image_query(skill: dict) -> str:
     """Query from the skill's context: name + key concepts (pure — unit tested)."""
-    parts = [skill.get("name", "")] + list(skill.get("key_concepts", [])[:3])
+    # Detect programming/code topics and map to more relevant Pexels queries
+    raw_name = skill.get("name", "")
+    raw_concepts = list(skill.get("key_concepts", [])[:3])
+    # If skill is about Python/code, avoid "python" snake ambiguity
+    text_blob = f"{raw_name} {' '.join(raw_concepts)}".lower()
+    is_code = any(w in text_blob for w in ["python", "elif", "if else", "function", "loop", "code", "programming", "algorithm"])
+    if is_code:
+        # Use education/technology code queries that return relevant images
+        return "programming education technology"
+    parts = [raw_name] + raw_concepts
     query = re.sub(r"\s+", " ", " ".join(p for p in parts if p)).strip(" ,.-")
     query = re.sub(r"\(.*?\)", "", query).strip()  # drop "(lesson)" style suffixes
     return re.sub(r"\s+", " ", query).strip()[:120] or skill.get("skill_id", "education")
@@ -54,10 +63,19 @@ def search_pexels(query: str, *, per_page: int = 3) -> list[dict]:
 
 
 def fetch_related_image(query: str) -> dict:
-    """Search + download the top result. Raises ValueError when nothing found."""
+    """Search + download the top result. Falls back to generic education image if specific query fails."""
     import requests
 
     photos = search_pexels(query)
+    if not photos:
+        # Fallback to generic education query
+        for fallback in ["education technology", "learning", "school classroom"]:
+            try:
+                photos = search_pexels(fallback, per_page=3)
+                if photos:
+                    break
+            except Exception:
+                continue
     if not photos:
         raise ValueError(f"No Pexels images found for query: {query!r}")
     top = photos[0]

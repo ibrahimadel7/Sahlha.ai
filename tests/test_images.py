@@ -61,16 +61,19 @@ def test_fetch_skill_image_caches(db_session, monkeypatch, tmp_path):
 
     calls: list = []
     monkeypatch.setattr(requests, "get", _fake_get_factory(calls))
+    # Seeding runs extract-skills, which now auto-generates the image (2 calls).
     skid = _seed_skill(db_session)
+    assert len(calls) == 2
     first = image_tools.fetch_skill_image(db_session, course_id="ic", lesson_id="il", skill_id=skid)
-    assert first["cached"] is False and first["path"].endswith(".jpg")
-    assert first["source_url"].startswith("https://pexels.com")
+    assert first["cached"] is True, "auto-generated during extraction; must hit cache"
+    assert len(calls) == 2, "cached call must not hit the network"
     import os
 
     assert os.path.exists(first["path"])
-    second = image_tools.fetch_skill_image(db_session, course_id="ic", lesson_id="il", skill_id=skid)
-    assert second["cached"] is True and second["path"] == first["path"]
-    assert len(calls) == 2, "cached call must not hit the network"
+    forced = image_tools.fetch_skill_image(db_session, course_id="ic", lesson_id="il",
+                                           skill_id=skid, force=True)
+    assert forced["cached"] is False and os.path.exists(forced["path"])
+    assert len(calls) == 4
 
 
 def test_fetch_skill_image_no_results(db_session, monkeypatch):

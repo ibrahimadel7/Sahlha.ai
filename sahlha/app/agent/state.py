@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 
 
 class Phase(str, Enum):
+    SKILL_EXTRACTION = "SKILL_EXTRACTION"
+    SKILL_EXPLANATION = "SKILL_EXPLANATION"
+    LESSON_EXPLANATION = "LESSON_EXPLANATION"
     QUESTION_GENERATION = "QUESTION_GENERATION"
     WAITING_FOR_TEACHER = "WAITING_FOR_TEACHER"
     ASSESSMENT = "ASSESSMENT"
@@ -39,5 +42,10 @@ class AgentState(BaseModel):
 
     def log(self, event: str, detail: Any = None) -> None:
         self.trace.append({"event": event, "detail": detail})
+
+    def transition(self, to: Phase) -> None:
+        """Validated phase transition: sets current_phase + logs it once."""
+        self.current_phase = to
+        self.log("phase", to.value if isinstance(to, Phase) else to)
 
     model_config = {"use_enum_values": True}

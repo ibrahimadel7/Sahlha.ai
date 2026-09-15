@@ -16,12 +16,19 @@ def get_failed_questions(db: Session, student_id: str) -> list[str]:
     return repo.get_failed_question_ids(db, student_id)
 
 
-def get_student_skill_performance(db: Session, student_id: str) -> list[dict]:
-    return [{"skill_id": p.skill_id, "total": p.total_attempts, "correct": p.correct_attempts,
-             "accuracy": p.accuracy} for p in repo.get_skill_performance(db, student_id)]
+def get_student_skill_performance(db: Session, student_id: str, *,
+                                  course_id: str | None = None,
+                                  lesson_id: str | None = None) -> list[dict]:
+    rows = repo.get_skill_performance(db, student_id, course_id=course_id, lesson_id=lesson_id)
+    return [{"skill_id": p.skill_id, "course_id": getattr(p, "course_id", "general"),
+             "lesson_id": getattr(p, "lesson_id", "lesson_1"),
+             "total": p.total_attempts, "correct": p.correct_attempts,
+             "accuracy": p.accuracy} for p in rows]
 
 
-def update_student_memory(db: Session, *, student_id: str, skill_id: str, correct: bool) -> dict:
-    perf = repo.upsert_skill_performance(db, student_id=student_id, skill_id=skill_id, correct=correct)
+def update_student_memory(db: Session, *, student_id: str, skill_id: str, correct: bool,
+                          course_id: str = "general", lesson_id: str = "lesson_1") -> dict:
+    perf = repo.upsert_skill_performance(db, student_id=student_id, skill_id=skill_id,
+                                         correct=correct, course_id=course_id, lesson_id=lesson_id)
     return {"skill_id": perf.skill_id, "total": perf.total_attempts,
             "correct": perf.correct_attempts, "accuracy": perf.accuracy}

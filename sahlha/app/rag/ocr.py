@@ -36,20 +36,60 @@ def _extract_docx(data: bytes) -> str:
     return "\n".join(p.text for p in doc.paragraphs)
 
 
+def _tesseract_cmd() -> str | None:
+    """Resolve the tesseract binary: PATH, TESSERACT_CMD, then known install locations."""
+    import os as _os
+    import shutil as _sh
+
+    found = _sh.which("tesseract") or _os.getenv("TESSERACT_CMD")
+    if found:
+        return found
+    for candidate in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                      r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"):
+        if _os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _poppler_path() -> str | None:
+    """Resolve poppler bin dir (for pdf2image): PATH, POPPLER_PATH, then WinGet location."""
+    import glob as _glob
+    import os as _os
+    import shutil as _sh
+
+    if _sh.which("pdftoppm"):
+        return None  # on PATH: pdf2image finds it unaided
+    env = _os.getenv("POPPLER_PATH")
+    if env and _os.path.exists(_os.path.join(env, "pdftoppm.exe")):
+        return env
+    base = _os.path.join(_os.getenv("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages")
+    for hit in _glob.glob(_os.path.join(base, "*oppler*", "**", "pdftoppm.exe"), recursive=True):
+        return _os.path.dirname(hit)
+    return None
+
+
 def _try_ocr_images(data: bytes, suffix: str) -> tuple[str, str]:
-    """Best-effort OCR via tesseract. Returns (text, method)."""
+    """Real OCR via tesseract (native text failed or image input). Returns (text, method)."""
     try:
         import pytesseract
         from PIL import Image
     except ImportError:
         return "", "ocr:unavailable (pytesseract/Pillow not installed)"
+    tesseract = _tesseract_cmd()
+    if not tesseract:
+        return "", "ocr:unavailable (tesseract binary not found; set TESSERACT_CMD)"
+    pytesseract.pytesseract.tesseract_cmd = tesseract
     try:
         if suffix == ".pdf":
             try:
                 from pdf2image import convert_from_bytes
             except ImportError:
                 return "", "ocr:unavailable (pdf2image not installed)"
-            images = convert_from_bytes(data, dpi=200)
+            poppler = _poppler_path()
+            if poppler is None and __import__("shutil").which("pdftoppm") is None:
+                return "", "ocr:unavailable (poppler not found; set POPPLER_PATH)"
+            kwargs = {"poppler_path": poppler} if poppler else {}
+            images = convert_from_bytes(data, dpi=200, **kwargs)
             texts = [pytesseract.image_to_string(img) for img in images]
             return "\n".join(texts), "ocr:tesseract(pdf2image)"
         image = Image.open(io.BytesIO(data))

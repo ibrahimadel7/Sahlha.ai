@@ -14,6 +14,25 @@ os.environ.setdefault("OPENAI_API_KEY", "")
 from sahlha.app.database.database import Base, get_db  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_external_keys(monkeypatch):
+    """Hermetic tests: external providers are opt-in per test via mocks.
+
+    Settings loads the developer's real .env at import; without this, tests would
+    spend real API calls (auto media generation) and become order-dependent.
+    """
+    from sahlha.app.config import settings as _s
+
+    monkeypatch.setattr(_s, "groq_api_key", "")
+    monkeypatch.setattr(_s, "openrouter_api_key", "")
+    monkeypatch.setattr(_s, "openai_api_key", "")
+    monkeypatch.setattr(_s, "pexels_api_key", "")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("PEXELS_API_KEY", raising=False)
+
+
 @pytest.fixture()
 def db_session():
     from sahlha.app.database import models  # noqa: F401  (register)

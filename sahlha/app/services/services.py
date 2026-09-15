@@ -11,9 +11,11 @@ from sahlha.app.rag import ingestion
 
 
 def upload_and_process(db: Session, *, file_bytes: bytes, filename: str,
-                       course_id: str, lesson_id: str, skill_id: str) -> dict:
+                       course_id: str, lesson_id: str, skill_id: str,
+                       eager: bool = True) -> dict:
     return ingestion.ingest_upload(db, file_bytes=file_bytes, filename=filename,
-                                   course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
+                                   course_id=course_id, lesson_id=lesson_id,
+                                   skill_id=skill_id, eager=eager)
 
 
 def generate_bank(db: Session, *, course_id: str, lesson_id: str, skill_id: str,
@@ -55,6 +57,15 @@ def get_lesson(db: Session, *, course_id: str, lesson_id: str) -> dict:
             "skills": list_skills(db, course_id=course_id, lesson_id=lesson_id)}
 
 
+def _skill_has_audio(s) -> bool:
+    import os as _os
+
+    from sahlha.app.agent.tools import audio_tools as _audio_tools
+
+    return _os.path.exists(_audio_tools.expected_path(
+        _audio_tools.skill_audio_text(s.name or "", s.explanation or "")))
+
+
 def list_skills(db: Session, *, course_id: str, lesson_id: str,
                 skill_id: str | None = None) -> list[dict]:
     rows = repo.list_skills(db, course_id=course_id, lesson_id=lesson_id)
@@ -63,7 +74,7 @@ def list_skills(db: Session, *, course_id: str, lesson_id: str,
     return [{"id": s.id, "course_id": s.course_id, "lesson_id": s.lesson_id, "skill_id": s.skill_id,
              "name": s.name, "description": s.description, "explanation": s.explanation,
              "key_concepts": s.key_concepts or [], "has_image": bool(s.image_path),
-             "image_alt": s.image_alt or ""}
+             "image_alt": s.image_alt or "", "has_audio": _skill_has_audio(s)}
             for s in rows]
 
 
@@ -122,15 +133,30 @@ def student_performance(db: Session, student_id: str) -> dict:
     }
 
 
-def pending_banks(db: Session) -> list[dict]:
+def pending_banks(db: Session, limit: int = 100) -> list[dict]:
     return [{"id": b.id, "course_id": b.course_id, "lesson_id": b.lesson_id,
              "skill_id": b.skill_id, "version": b.version, "status": b.status,
              "feedback": b.teacher_feedback,
-             "num_questions": len(repo.get_questions(db, b.id))} for b in repo.list_banks(db, status="pending_review")]
+             "num_questions": len(repo.get_questions(db, b.id))} for b in repo.list_banks(db, status="pending_review", limit=limit)]
 
 
 def bank_detail(db: Session, bank_id: str) -> dict | None:
     return question_tools.get_question_bank(db, bank_id)
+
+
+def flag_question(db: Session, *, question_id: str, reason: str = "") -> dict:
+    """Teacher flags one question: excluded from future assessments, reason feeds regeneration."""
+    try:
+        fb = repo.flag_question(db, question_id=question_id, reason=reason)
+    except ValueError as exc:
+        raise ValueError(str(exc))
+    return {"question_id": fb.question_id, "kind": fb.kind, "reason": fb.reason,
+            "created_at": fb.created_at.isoformat()}
+
+
+def list_flags(db: Session, limit: int = 100) -> list[dict]:
+    return [{"question_id": f.question_id, "kind": f.kind, "reason": f.reason,
+             "created_at": f.created_at.isoformat()} for f in repo.list_flags(db, limit)]
 
 
 def skill_audio(db: Session, *, course_id: str, lesson_id: str,
@@ -155,6 +181,24 @@ def skill_image(db: Session, *, course_id: str, lesson_id: str,
 
     return image_tools.fetch_skill_image(db, course_id=course_id, lesson_id=lesson_id,
                                          skill_id=skill_id, force=force)
+
+
+def list_students(db: Session, limit: int = 100) -> list[dict]:
+    return [{"id": s.id, "name": s.name, "created_at": s.created_at.isoformat()} for s in repo.list_students(db, limit=limit)]
+
+
+def create_student(db: Session, *, student_id: str | None = None, name: str = "Student") -> dict:
+    if not name or not name.strip():
+        raise ValueError("Student name is required")
+    name = name.strip()[:256]
+    # Auto-generate id if not provided or empty
+    sid = (student_id or "").strip() or None
+    # If id provided and exists, return existing (idempotent for testing)
+    if sid and repo.get_student(db, sid):
+        s = repo.get_student(db, sid)
+        return {"id": s.id, "name": s.name, "created_at": s.created_at.isoformat()}
+    s = repo.get_or_create_student(db, student_id=sid, name=name)
+    return {"id": s.id, "name": s.name, "created_at": s.created_at.isoformat()}
 
 
 def skill_progress(db: Session, *, student_id: str, course_id: str, lesson_id: str) -> dict:
@@ -195,6 +239,7 @@ def skill_progress(db: Session, *, student_id: str, course_id: str, lesson_id: s
             "attempted": len(atts), "correct": correct,
             "accuracy": (correct / len(atts)) if atts else None,
             "completed": len(atts) >= settings.assessment_num_questions,
+            "needs_review": bool(atts) and (correct / len(atts)) < 0.5,  # feedback loop 3
         })
     done = sum(1 for s in skills if s["completed"])
     return {"student_id": student_id, "course_id": course_id, "lesson_id": lesson_id,

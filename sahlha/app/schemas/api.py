@@ -37,3 +37,12 @@ class SubmitAssessmentRequest(BaseModel):
 
 class ReviewRequest(BaseModel):
     feedback: str = ""
+
+
+class FlagRequest(BaseModel):
+    reason: str = ""
+
+
+class CreateStudentRequest(BaseModel):
+    student_id: str | None = Field(default=None, description="Optional custom ID; auto-generated if empty")
+    name: str = Field(default="Student", min_length=1, max_length=256)

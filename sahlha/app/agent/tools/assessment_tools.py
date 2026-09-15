@@ -27,7 +27,13 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
     n_per_bank = n_per_bank or settings.assessment_num_questions
     pool = question_tools.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
     if not pool:
-        raise ValueError("No approved questions found. Approve a bank first.")
+        scope = "/".join([p for p in (course_id, lesson_id, skill_id) if p]) or "global pool"
+        raise ValueError(f"No approved questions found for '{scope}'. Approve a bank first.")
+    # FEEDBACK LOOP 2 (enforcement): teacher-flagged questions never resurface.
+    flagged = repo.get_flagged_question_ids(db)
+    pool = [q for q in pool if q["id"] not in flagged]
+    if not pool:
+        raise ValueError("All approved questions were excluded by teacher flags. Unflag or regenerate a bank.")
     # Group pool by bank (stable order) — one selection round per bank.
     banks: dict[str, list[dict]] = {}
     for q in pool:
@@ -36,8 +42,11 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
     history = student_tools.get_student_history(db, student_id)
     failed_ids = set(student_tools.get_failed_questions(db, student_id))
     seen_ids = {h["question_id"] for h in history}
-    perf = {p["skill_id"]: p["accuracy"] for p in student_tools.get_student_skill_performance(db, student_id)}
-    weak_skills = {s for s, acc in perf.items() if acc < 0.6}
+    # Scope weak-skill memory to the requested lesson when given; otherwise global
+    # (preserves single-lesson MVP behavior while preventing cross-lesson collisions).
+    perf = {p["skill_id"]: p["accuracy"] for p in student_tools.get_student_skill_performance(
+        db, student_id, course_id=course_id, lesson_id=lesson_id)}
+    weak_skills = {s for s, acc in perf.items() if acc is not None and acc < 0.6}
 
     selected: list[dict] = []
     rationale: list[str] = []
@@ -53,9 +62,10 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
 
     for bank_id, group_pool in banks.items():
         if len(group_pool) < n_per_bank:
+            skid = group_pool[0].get("skill_id", "?") if group_pool else "?"
             raise ValueError(
-                f"Bank {bank_id} has only {len(group_pool)} approved questions, "
-                f"need {n_per_bank} per bank.")
+                f"Bank {bank_id} (skill '{skid}') has only {len(group_pool)} approved "
+                f"unflagged questions, need {n_per_bank} per bank. Regenerate or unflag.")
         by_id = {q["id"]: q for q in group_pool}
         group: list[dict] = []
         _take(group, [by_id[i] for i in failed_ids if i in by_id], "retry previously failed")
@@ -75,9 +85,24 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
         selected.extend(group[:n_per_bank])
         per_bank[bank_id] = len(group[:n_per_bank])
 
+    # Coverage: when a lesson is requested, surface skills with zero approved
+    # unflagged questions so the UI can warn instead of silently testing a subset.
+    covered_skills = sorted({q["skill_id"] for q in selected})
+    missing_skills: list[str] = []
+    if course_id and lesson_id and not skill_id:
+        try:
+            lesson_skills = [s.skill_id for s in repo.list_skills(
+                db, course_id=course_id, lesson_id=lesson_id)]
+            pool_skills = {q["skill_id"] for q in pool}
+            missing_skills = sorted(set(lesson_skills) - pool_skills)
+        except Exception:
+            missing_skills = []
+
     return selected, {"rationale": rationale, "weak_skills": sorted(weak_skills),
                       "failed_retried": sorted(failed_ids & {s["id"] for s in selected}),
-                      "per_bank": per_bank, "n_per_bank": n_per_bank}
+                      "per_bank": per_bank, "n_per_bank": n_per_bank,
+                      "flagged_excluded": len(flagged),
+                      "covered_skills": covered_skills, "missing_skills": missing_skills}
 
 
 def evaluate_answer(question: dict, student_answer) -> dict:

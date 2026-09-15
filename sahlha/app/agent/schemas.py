@@ -85,3 +85,14 @@ class LessonExplanationModel(BaseModel):
         if len(v.strip()) < 60:
             raise ValueError("lesson explanation too short; must ground it in the material")
         return v.strip()
+
+
+class CritiqueVerdict(BaseModel):
+    index: int = 0
+    grounded: bool = True
+    answer_correct: bool = True
+    issue: str = ""
+
+
+class CritiqueResult(BaseModel):
+    verdicts: list[CritiqueVerdict]

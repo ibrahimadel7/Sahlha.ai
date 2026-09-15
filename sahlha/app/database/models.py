@@ -13,7 +13,7 @@ def _uid() -> str:
 
 
 def _now() -> datetime.datetime:
-    return datetime.datetime.utcnow()
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 class Document(Base):
@@ -86,6 +86,8 @@ class Skill(Base):
 
 class QuestionBank(Base):
     __tablename__ = "question_banks"
+    __table_args__ = (UniqueConstraint("course_id", "lesson_id", "skill_id", "version",
+                                      name="uq_bank_skill_version"),)
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uid)
     course_id: Mapped[str] = mapped_column(String(128), default="general")
     lesson_id: Mapped[str] = mapped_column(String(128), default="lesson_1")
@@ -122,6 +124,8 @@ class Student(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uid)
     name: Mapped[str] = mapped_column(String(256), default="Student")
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, unique=True, default=None)
+    role: Mapped[str] = mapped_column(String(32), default="student")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
 
@@ -131,6 +135,10 @@ class Assessment(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uid)
     student_id: Mapped[str] = mapped_column(String(32), ForeignKey("students.id"))
     question_bank_id: Mapped[str] = mapped_column(String(32), ForeignKey("question_banks.id"))
+    # Multi-bank lineage: an assessment spans N banks (one per skill), so we store
+    # the dominant course/lesson explicitly instead of inferring from one bank.
+    course_id: Mapped[str] = mapped_column(String(128), default="general")
+    lesson_id: Mapped[str] = mapped_column(String(128), default="lesson_1")
     question_ids: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(32), default="started")  # started|submitted
     score: Mapped[float] = mapped_column(Float, default=0.0)
@@ -139,7 +147,6 @@ class Assessment(Base):
 
 class StudentAttempt(Base):
     __tablename__ = "student_attempts"
-
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uid)
     student_id: Mapped[str] = mapped_column(String(32), ForeignKey("students.id"))
     question_id: Mapped[str] = mapped_column(String(32), ForeignKey("questions.id"))
@@ -151,12 +158,30 @@ class StudentAttempt(Base):
 
 class StudentSkillPerformance(Base):
     __tablename__ = "student_skill_performance"
-    __table_args__ = (UniqueConstraint("student_id", "skill_id", name="uq_student_skill"),)
+    __table_args__ = (UniqueConstraint("student_id", "course_id", "lesson_id", "skill_id",
+                                      name="uq_student_skill_scoped"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uid)
     student_id: Mapped[str] = mapped_column(String(32), ForeignKey("students.id"))
+    course_id: Mapped[str] = mapped_column(String(128), default="general")
+    lesson_id: Mapped[str] = mapped_column(String(128), default="lesson_1")
     skill_id: Mapped[str] = mapped_column(String(128))
     total_attempts: Mapped[int] = mapped_column(Integer, default=0)
     correct_attempts: Mapped[int] = mapped_column(Integer, default=0)
     accuracy: Mapped[float] = mapped_column(Float, default=0.0)
     last_updated: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class QuestionFeedback(Base):
+    """Teacher feedback loop: item-level flags on questions (append-only).
+
+    Flagged questions are excluded from future assessments, and their reasons
+    are fed back into the next generation for the same skill.
+    """
+    __tablename__ = "question_feedback"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uid)
+    question_id: Mapped[str] = mapped_column(String(32), ForeignKey("questions.id"))
+    kind: Mapped[str] = mapped_column(String(32), default="flag")  # flag
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)

@@ -13,19 +13,25 @@ import re
 
 
 def _resolve_provider() -> tuple[str, str, str]:
-    """Returns (provider_name, api_key, model). provider is 'groq', 'openai', or ''."""
+    """Returns (provider_name, api_key, model). provider is 'groq', 'openai', 'openrouter' or ''."""
     try:
         from sahlha.app.config import settings
 
         groq_key = settings.groq_api_key or os.getenv("GROQ_API_KEY", "")
         if groq_key:
             return "groq", groq_key, os.getenv("GROQ_MODEL", settings.groq_model)
+        # OpenRouter as backup when Groq absent
+        or_key = settings.openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "")
+        if or_key:
+            return "openrouter", or_key, os.getenv("OPENROUTER_MODEL", settings.openrouter_model)
         oai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY", "")
         if oai_key:
             return "openai", oai_key, settings.openai_model
     except Exception:
         if os.getenv("GROQ_API_KEY"):
             return "groq", os.getenv("GROQ_API_KEY", ""), os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        if os.getenv("OPENROUTER_API_KEY"):
+            return "openrouter", os.getenv("OPENROUTER_API_KEY", ""), os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
         if os.getenv("OPENAI_API_KEY"):
             return "openai", os.getenv("OPENAI_API_KEY", ""), "gpt-4o-mini"
     return "", "", ""
@@ -36,52 +42,151 @@ def llm_available() -> bool:
     return bool(provider)
 
 
-def _call_llm(system: str, user: str) -> tuple[str, str]:
-    """Calls the configured provider. Returns (raw_text, provider_name)."""
-    provider, api_key, model = _resolve_provider()
-    if provider == "groq":
-        try:
-            from groq import Groq  # native SDK when installed
+def _get_openrouter_key() -> str:
+    try:
+        from sahlha.app.config import settings
 
-            client = Groq(api_key=api_key)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                temperature=0.4,
-                response_format={"type": "json_object"},
-            )
-            return resp.choices[0].message.content or "{}", "groq"
-        except ImportError:
-            pass  # fall through to OpenAI-compatible client
-        from openai import OpenAI
+        return settings.openrouter_api_key or os.getenv("OPENROUTER_API_KEY", "")
+    except Exception:
+        return os.getenv("OPENROUTER_API_KEY", "")
 
-        from sahlha.app.config import settings as _s
 
-        base_url = os.getenv("GROQ_BASE_URL", _s.groq_base_url)
-        client = OpenAI(api_key=api_key, base_url=base_url)
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    """Only retry on provider/quota/rate-limit/transient failures, not on programming errors."""
+    msg = str(exc).lower()
+    # Model-not-found (404) or JSON validation failure should failover to backup provider
+    if "model" in msg and ("does not exist" in msg or "model_not_found" in msg or "not found" in msg and "model" in msg):
+        return True
+    if "failed to validate json" in msg or "json_validate_failed" in msg or "decommissioned" in msg:
+        return True
+    # Explicit non-retryable signals (bad request, auth, not found, validation)
+    non_retry = ["invalid api key", "unauthorized", "forbidden", "invalid_request", "validation"]
+    # Check status code if present
+    status = getattr(exc, "status_code", None)
+    if status is None and hasattr(exc, "response") and getattr(exc, "response", None) is not None:
+        status = getattr(exc.response, "status_code", None)
+    if status is None:
+        m = re.search(r"error code:\s*(\d+)", msg)
+        if m:
+            try:
+                status = int(m.group(1))
+            except Exception:
+                pass
+    if status is not None:
+        if status == 429 or 500 <= status <= 599:
+            return True
+        if status == 404 and "model" in msg:
+            return True  # deprecated/missing model → try OpenRouter
+        if 400 <= status < 500:
+            # 429 already handled; others are client errors → not retryable
+            # except 408 timeout which is retryable
+            if status == 408:
+                return True
+            return False
+    # String-based retry signals
+    retry_phrases = [
+        "rate limit", "rate_limit", "quota", "exhausted", "overloaded", "unavailable",
+        "timeout", "timed out", "connection", "temporarily", "try again", "capacity",
+        "over capacity", "5xx", "provider", "429",
+        "model_not_found", "does not exist", "decommissioned", "failed to validate json", "json_validate_failed",
+    ]
+    if any(p in msg for p in retry_phrases):
+        # But exclude non-retryable that also contains retry phrase? Already handled
+        if any(nr in msg for nr in non_retry):
+            return False
+        return True
+    return False
+
+
+def _call_groq(system: str, user: str, api_key: str, model: str) -> tuple[str, str]:
+    """Single Groq attempt. Raises on failure."""
+    try:
+        from groq import Groq  # native SDK when installed
+
+        client = Groq(api_key=api_key)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.4,
+            max_tokens=2000,
             response_format={"type": "json_object"},
         )
         return resp.choices[0].message.content or "{}", "groq"
+    except ImportError:
+        pass  # fall through to OpenAI-compatible client
+    from openai import OpenAI
 
+    from sahlha.app.config import settings as _s
+
+    base_url = os.getenv("GROQ_BASE_URL", _s.groq_base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.4,
+        max_tokens=2000,
+        response_format={"type": "json_object"},
+    )
+    return resp.choices[0].message.content or "{}", "groq"
+
+
+def _call_openrouter(system: str, user: str) -> tuple[str, str]:
+    """Single OpenRouter attempt (OpenAI-compatible). Raises on failure."""
     from openai import OpenAI
 
     from sahlha.app.config import settings
 
-    kwargs: dict = {"api_key": api_key}
-    if settings.openai_base_url:
-        kwargs["base_url"] = settings.openai_base_url
-    client = OpenAI(**kwargs)
+    api_key = _get_openrouter_key()
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not configured")
+    model = os.getenv("OPENROUTER_MODEL", settings.openrouter_model)
+    base_url = os.getenv("OPENROUTER_BASE_URL", settings.openrouter_base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url)
     resp = client.chat.completions.create(
-        model=model or settings.openai_model,
+        model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         temperature=0.4,
+        max_tokens=2000,
         response_format={"type": "json_object"},
     )
-    return resp.choices[0].message.content or "{}", "openai"
+    return resp.choices[0].message.content or "{}", "openrouter"
+
+
+def _call_llm(system: str, user: str) -> tuple[str, str]:
+    """Calls Groq → (on retryable failure) OpenRouter. Single failover, no loop."""
+    provider, api_key, model = _resolve_provider()
+    # Primary: Groq
+    if provider == "groq":
+        try:
+            return _call_groq(system, user, api_key, model)
+        except Exception as exc:
+            if _is_retryable_llm_error(exc) and _get_openrouter_key():
+                # One failover to OpenRouter
+                return _call_openrouter(system, user)
+            raise
+    # If no Groq but OpenRouter configured, use it directly (Groq unavailable)
+    if provider == "openrouter":
+        return _call_openrouter(system, user)
+    # Fallback for legacy openai provider
+    if provider == "openai":
+        from openai import OpenAI
+
+        from sahlha.app.config import settings
+
+        kwargs: dict = {"api_key": api_key}
+        if settings.openai_base_url:
+            kwargs["base_url"] = settings.openai_base_url
+        client = OpenAI(**kwargs)
+        resp = client.chat.completions.create(
+            model=model or settings.openai_model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.4,
+            max_tokens=2000,
+            response_format={"type": "json_object"},
+        )
+        return resp.choices[0].message.content or "{}", "openai"
+    # No provider at all — let caller trigger deterministic fallback via llm_available check
+    raise RuntimeError("no-llm-configured")
 
 
 def _extract_json_array(text: str) -> list:
@@ -271,3 +376,49 @@ def fallback_lesson_explanation(context_chunks: list[dict], course_id: str, less
         parts.append("You will work through these skills in order: " + ", ".join(skill_names) + ".")
     parts.append("After studying each skill explanation below, you will be ready for the exercise.")
     return {"title": title, "explanation": "\n\n".join(parts), "key_concepts": terms[:8]}
+
+
+def fallback_critique(questions: list[dict], context_chunks: list[dict]) -> list[dict]:
+    """Deterministic quality gate: term-overlap grounding + answer-index sanity (pure logic)."""
+    vocab: set[str] = set()
+    for c in context_chunks:
+        for w in re.sub(r"[^a-zA-Z ]", "", c.get("text", "")).lower().split():
+            if len(w) > 4:
+                vocab.add(w)
+    verdicts = []
+    for i, q in enumerate(questions):
+        qterms = {w for w in re.sub(r"[^a-zA-Z ]", "", q.get("question", "")).lower().split()
+                  if len(w) > 4}
+        overlap = len(qterms & vocab)
+        grounded = overlap >= 2
+        answer_ok = True
+        if q.get("type") == "multiple_choice":
+            ca = q.get("correct_answer")
+            answer_ok = isinstance(ca, int) and 0 <= ca < len(q.get("options", []))
+        issue = ""
+        if not grounded:
+            issue = f"shares only {overlap} significant terms with the lesson material"
+        elif not answer_ok:
+            issue = "correct_answer index is out of range"
+        verdicts.append({"index": i, "grounded": grounded, "answer_correct": answer_ok,
+                         "issue": issue})
+    return verdicts
+
+
+def critique_questions(system: str, user: str, questions: list[dict],
+                       context_chunks: list[dict]) -> tuple[list[dict], str]:
+    """Returns (verdicts, backend). Fails soft to the deterministic gate."""
+    if llm_available():
+        try:
+            raw, provider = _call_llm(system, user)
+            data = json.loads(raw.strip())
+            items = data["verdicts"] if isinstance(data, dict) else data
+            from sahlha.app.agent.schemas import CritiqueResult
+
+            verdicts = [v.model_dump() for v in CritiqueResult(
+                verdicts=[{**v, "index": idx} if "index" not in v else v
+                          for idx, v in enumerate(items)]).verdicts]
+            return verdicts, provider
+        except Exception as exc:
+            return fallback_critique(questions, context_chunks), f"fallback(llm-error: {exc})"
+    return fallback_critique(questions, context_chunks), "fallback(no-api-key)"

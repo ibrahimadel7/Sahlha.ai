@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from sahlha.app.database.database import get_db
-from sahlha.app.schemas.api import StartAssessmentRequest, SubmitAssessmentRequest
+from sahlha.app.schemas.api import CreateStudentRequest, StartAssessmentRequest, SubmitAssessmentRequest
 from sahlha.app.services import services as svc
 
 router = APIRouter(tags=["assessment"])
@@ -24,7 +24,9 @@ def submit(assessment_id: str, req: SubmitAssessmentRequest, db: Session = Depen
     try:
         return svc.submit_assessment(db, assessment_id=assessment_id, answers=req.answers)
     except ValueError as exc:
-        raise HTTPException(404, str(exc))
+        msg = str(exc)
+        # Double-submit is a client error (400); unknown id is 404.
+        raise HTTPException(400 if "already submitted" in msg else 404, msg)
 
 
 @router.get("/students/{student_id}/performance")
@@ -33,6 +35,19 @@ def performance(student_id: str, db: Session = Depends(get_db)):
         return svc.student_performance(db, student_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc))
+
+
+@router.get("/students")
+def list_students(limit: int = 100, db: Session = Depends(get_db)):
+    return svc.list_students(db, limit=limit)
+
+
+@router.post("/students")
+def create_student(req: CreateStudentRequest, db: Session = Depends(get_db)):
+    try:
+        return svc.create_student(db, student_id=req.student_id, name=req.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("/students/{student_id}/skill-progress")

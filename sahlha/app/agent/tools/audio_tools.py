@@ -14,13 +14,31 @@ from sahlha.app.audio import tts
 from sahlha.app.database.repositories import repositories as repo
 
 
+def _voice_used(voice: str | None) -> str:
+    from sahlha.app.config import settings
+
+    return voice or os.getenv("GROQ_TTS_VOICE", settings.groq_tts_voice)
+
+
+def expected_path(text: str, voice: str | None = None) -> str:
+    """Deterministic cache path for a text (lets callers check has_audio w/o synth)."""
+    from sahlha.app.config import settings
+
+    v = _voice_used(voice)
+    digest = hashlib.sha1(f"{settings.groq_tts_model}|{v}|{text}".encode()).hexdigest()[:16]
+    return os.path.join(settings.audio_dir, f"{digest}.wav")
+
+
+def skill_audio_text(name: str, explanation: str) -> str:
+    return f"{name}. {explanation}"
+
+
 def _cached_or_synth(text: str, voice: str | None) -> tuple[str, str, bool]:
     from sahlha.app.config import settings
 
     os.makedirs(settings.audio_dir, exist_ok=True)
-    voice_used = voice or os.getenv("GROQ_TTS_VOICE", settings.groq_tts_voice)
-    digest = hashlib.sha1(f"{settings.groq_tts_model}|{voice_used}|{text}".encode()).hexdigest()[:16]
-    path = os.path.join(settings.audio_dir, f"{digest}.wav")
+    voice_used = _voice_used(voice)
+    path = expected_path(text, voice_used)
     if os.path.exists(path):
         return path, voice_used, True
     wav, voice_used = tts.synthesize(text, voice)
@@ -37,7 +55,7 @@ def skill_explanation_to_audio(db: Session, *, course_id: str, lesson_id: str,
         raise ValueError(f"Skill {skill_id} not found in {course_id}/{lesson_id}")
     if not skill.explanation:
         raise ValueError(f"Skill {skill_id} has no explanation yet — run extract-skills first")
-    text = f"{skill.name}. {skill.explanation}"
+    text = skill_audio_text(skill.name, skill.explanation)
     path, voice_used, cached = _cached_or_synth(text, voice)
     return {"audio_id": os.path.basename(path).replace(".wav", ""), "path": path,
             "skill_id": skill_id, "voice": voice_used, "cached": cached,

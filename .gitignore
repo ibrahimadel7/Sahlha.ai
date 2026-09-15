@@ -1,5 +1,13 @@
 __pycache__/
 *.pyc
 .env
+.env.*.local
+!.env.example
 data/
+*.db
+*.sqlite*
 .pytest_cache/
+.venv/
+venv/
+.firecrawl/
+*.log

@@ -8,9 +8,8 @@ student studies, then is assessed (**4 questions picked from EACH bank**, or one
 skill's 4 when a `skill_id` is given — **skill = explanation + exercise**) →
 attempts stored → memory updated → next assessment adapts.
 
-> LLM provider: **Groq** (`GROQ_API_KEY` + `GROQ_MODEL`, default `llama-3.3-70b-versatile`,
-> via native `groq` SDK with OpenAI-compatible fallback). Without a key the agent uses a
-> **grounded deterministic fallback generator** so the whole loop still works offline.
+> LLM provider: **Groq primary → OpenRouter backup → deterministic fallback** (`GROQ_API_KEY` + `GROQ_MODEL`, default `llama-3.3-70b-versatile`; backup `OPENROUTER_API_KEY` + `OPENROUTER_MODEL` default `openai/gpt-4o-mini` via `https://openrouter.ai/api/v1`). Without any key the agent uses a **grounded deterministic fallback generator** so the whole loop still works offline.
+> TTS provider: **Groq Orpheus → OpenRouter TTS → non-fatal skip** (`canopylabs/orpheus-v1-english` voice `troy`; backup `OPENROUTER_TTS_MODEL` default `openai/gpt-4o-mini-tts` voice `alloy` via `POST /api/v1/audio/speech`). See `.env.example`.
 
 ## 1. Final project structure
 
@@ -69,9 +68,27 @@ SKILL_EXTRACTION → SKILL_EXPLANATION → QUESTION_GENERATION (per skill)
   `SkillList`) → persisted in `skills` (idempotent unless `force=True`). The agent decides
   the number of skills (one per lesson topic); `max_skills` is only a safety cap.
 - `explain_skills()`: per skill, skill-focused retrieval → Groq writes a grounded
-  student-facing explanation → stored on the skill row.
+  student-facing explanation → **skill tool → explanation tool → audio + image tools**
+  (one call yields explanation + picture + speech; media recorded under `media`, never
+  fatal). Stored on the skill row.
 - `explain_lesson()`: one grounded overview (title + explanation + key concepts) for the
   whole lesson → stored in `lesson_explanations` (idempotent; runs inside skill extraction too).
+  Same chain for the lesson audio (explanation tool → audio tool).
+
+## 2b. Feedback loops (agent architecture)
+
+Three closed loops; the LLM reasons, the app enforces:
+
+1. **Generation self-critique** — every draft bank passes `critique_questions`
+   (Groq verdicts, or a deterministic term-overlap gate offline): ungrounded or
+   mis-answered drafts are dropped and topped up with grounded replacements. Logged in trace.
+2. **Teacher flags** — `POST /teacher/questions/{id}/flag` marks one bad question with a
+   reason. Flagged questions are **excluded from all future selections**, and their reasons
+   are **auto-appended to the next generation's feedback** for that skill (no retyping).
+   `GET /teacher/flags` lists them.
+3. **Mastery review** — each submit returns `skills_needing_review` (<50% in that
+   assessment); `skill-progress` exposes persistent `needs_review` per skill. Students
+   re-study flagged skills; teachers see where explanations/banks are failing.
 - `generate_lesson_banks()`: one `generate_question_bank()` per skill (10 questions each) — skill-focused
   retrieval → Groq generates **structured JSON** → `QuestionList` validation →
   `save_questions()` → phase `WAITING_FOR_TEACHER`. The bank's `skill_id` is enforced
@@ -93,6 +110,10 @@ SKILL_EXTRACTION → SKILL_EXPLANATION → QUESTION_GENERATION (per skill)
 | `retrieve_lesson(course, lesson)` | RAG chunks for one lesson (with doc/course/lesson/skill/page/chunk metadata) |
 | `retrieve_skill_material(skill)` | RAG chunks for one skill |
 | `retrieve_relevant_material(query, filters)` | free-form semantic search with optional filters |
+| `register_skill` / `setup_skill` (skill tools) | persist a skill; attach its explanation **via the explanation tool** |
+| `explain_skill` / `explain_lesson` (explanation tools) | persist explanation text, then **call audio + image tools** (media never fails the explanation) |
+| `skill_explanation_to_audio` / `lesson_explanation_to_audio` | Groq Orpheus speech, cached by content hash |
+| `fetch_skill_image` | Pexels picture from skill context (name + key concepts), cached on disk |
 | `save_questions(...)` | **validate** LLM JSON (Pydantic) then persist new `pending_review` version |
 | `get_question_bank(bank_id)` | full bank + questions (teacher review) |
 | `get_approved_questions(filters)` | only `approved` banks' questions (assessment pool) |
@@ -122,13 +143,26 @@ The agent **never** touches the DB/vector store directly — only through these 
 ## 5. RAG architecture
 
 ```text
-upload bytes → extract_document_text() → clean → overlap-chunk (800/120)
-→ persist chunks → refit TF-IDF → cosine search (+ keyword fallback)
+upload bytes → extract_document_text() → clean → sentence-aware chunks (overlap)
+→ persist chunks → encode dense vectors (MiniLM-L6-v2, cached to disk)
+→ MMR cosine search (+ score floor with top-k backoff)
 ```
 
-- `ocr.py` is a provider interface: native text for pdf/docx/txt; scanned PDFs/images go to
-  tesseract (`pytesseract`/`pdf2image`) when installed, otherwise recorded as
-  `ocr:unavailable` without crashing ingestion. `is_scanned` + `method` are returned.
+- `embeddings.py`: dense semantic vectors first (384-d, normalized); TF-IDF fallback
+  keeps the loop working offline. Backend recorded in the vector cache; corpus/backend
+  changes trigger rebuilds, otherwise the cache is reused.
+- `chunking.py`: packs whole sentences (never mid-sentence cuts) with trailing-sentence
+  overlap between consecutive chunks.
+- `vectorstore.py`: cosine search over 3× candidates → MMR (λ=0.7) diversity →
+  calibrated score floor (paraphrase ≈0.09, junk ≈0.02) with backoff so the agent is
+  never starved of context. Proven by `tests/test_rag_proper.py`: a paraphrase with
+  (almost) no shared keywords still retrieves the right material.
+
+- `ocr.py` is a provider interface: native text for pdf/docx/txt; text-thin PDFs and
+  images go through **real Tesseract OCR** (this machine: Tesseract 5.4 + Poppler via
+  winget; elsewhere `winget install UB-Mannheim.TesseractOCR oschwartz10612.Poppler`,
+  or set `TESSERACT_CMD`/`POPPLER_PATH`). Every result reports `is_scanned` + `method`,
+  and `tests/test_ocr.py` proves scanned PNG/PDFs are actually read.
 - Every retrieved chunk carries `document_id, course_id, lesson_id, skill_id, page, chunk_id, text, score`.
 - Generation is **grounded**: only retrieved chunks enter the prompt; fallback generator builds
   stems from chunk sentences. Full documents are never pasted into prompts.
@@ -148,6 +182,8 @@ GET  /teacher/question-banks/pending
 GET  /teacher/question-banks/{id}
 POST /teacher/question-banks/{id}/approve
 POST /teacher/question-banks/{id}/reject        (JSON {feedback} → next version uses it)
+POST /teacher/questions/{qid}/flag              (JSON {reason} → excluded + feeds regeneration)
+GET  /teacher/flags
 POST /assessment/start                 (optional skill_id → that skill's 4-question exercise)
 POST /assessment/{id}/submit
 GET  /students/{id}/performance
@@ -187,7 +223,7 @@ count; review explanations) → Generate 10-question banks (one per skill) → a
 start its 4-question exercise → submit → progress bar tracks completed skills →
 **Debug** tab shows phases/tool calls).
 
-## 10b. Audio explanations (Groq TTS)
+## 10b. Audio explanations (Groq TTS → OpenRouter fallback)
 
 New tool pair `skill_explanation_to_audio` / `lesson_explanation_to_audio`
 (`sahlha/app/agent/tools/audio_tools.py`) turns stored explanations into speech via
@@ -196,6 +232,11 @@ long text is split sentence-aware, each chunk synthesized, and the WAVs stitched
 Files are cached in `data/audio/` by content hash. The student UI has a 🔊 **Listen**
 button per skill. Requires `GROQ_API_KEY` **and** accepting the model terms in the Groq
 console — without them the endpoints return `503` (there is no offline TTS fallback).
+**Backup:** when Groq TTS fails (rate-limit/quota/5xx/timeout) and `OPENROUTER_API_KEY` is set,
+the same `tts.synthesize()` automatically retries via OpenRouter `POST /api/v1/audio/speech`
+(model `openai/gpt-4o-mini-tts` voice `alloy` by default, configurable via
+`OPENROUTER_TTS_MODEL`/`OPENROUTER_TTS_VOICE`). Both providers share the same chunking,
+stitching and hash cache; if both fail the existing non-fatal `skipped → 503` behavior is preserved.
 
 ## 10c. Skill images (Pexels)
 

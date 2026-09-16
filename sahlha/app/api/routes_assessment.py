@@ -30,11 +30,13 @@ def submit(assessment_id: str, req: SubmitAssessmentRequest, db: Session = Depen
 
 
 @router.get("/students/{student_id}/performance")
-def performance(student_id: str, db: Session = Depends(get_db)):
+def performance(student_id: str, student_name: str = "Student", db: Session = Depends(get_db)):
     try:
-        return svc.student_performance(db, student_id)
+        return svc.student_performance(db, student_id, student_name=student_name)
     except ValueError as exc:
-        raise HTTPException(404, str(exc))
+        msg = str(exc)
+        # Unknown id no longer 404s (auto-created); only bad input is 400.
+        raise HTTPException(400 if "required" in msg else 404, msg)
 
 
 @router.get("/students")
@@ -52,9 +54,11 @@ def create_student(req: CreateStudentRequest, db: Session = Depends(get_db)):
 
 @router.get("/students/{student_id}/skill-progress")
 def skill_progress(student_id: str, course_id: str = "general", lesson_id: str = "lesson_1",
-                   db: Session = Depends(get_db)):
+                   student_name: str = "Student", db: Session = Depends(get_db)):
     """Skill = explanation + exercise: per-skill study/exercise status."""
     try:
-        return svc.skill_progress(db, student_id=student_id, course_id=course_id, lesson_id=lesson_id)
+        return svc.skill_progress(db, student_id=student_id, course_id=course_id, lesson_id=lesson_id,
+                                  student_name=student_name)
     except ValueError as exc:
-        raise HTTPException(404, str(exc))
+        msg = str(exc)
+        raise HTTPException(400 if "required" in msg else 404, msg)

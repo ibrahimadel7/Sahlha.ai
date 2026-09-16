@@ -12,8 +12,24 @@ router = APIRouter(prefix="/audio", tags=["audio"])
 
 
 def _to_file(result: dict) -> FileResponse:
-    return FileResponse(result["path"], media_type="audio/wav",
-                        filename=f"{result.get('skill_id') or result.get('lesson_id')}.wav")
+    path = result["path"]
+    # Sniff the actual container: old caches may hold MP3 bytes under a .wav
+    # name. Serving MP3 as audio/wav makes <audio> fail silently.
+    media_type = result.get("media_type") or "audio/wav"
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(16)
+        if head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
+            media_type = "audio/mpeg"
+        elif head.startswith(b"RIFF"):
+            media_type = "audio/wav"
+        elif path.lower().endswith(".mp3"):
+            media_type = "audio/mpeg"
+    except Exception:
+        pass
+    stem = result.get("skill_id") or result.get("lesson_id") or "audio"
+    ext = "mp3" if media_type == "audio/mpeg" else "wav"
+    return FileResponse(path, media_type=media_type, filename=f"{stem}.{ext}")
 
 
 @router.get("/skill")

@@ -247,13 +247,15 @@ def list_flags(db: Session, limit: int = 100) -> list[m.QuestionFeedback]:
 
 # ---- Students / attempts ----
 def get_or_create_student(db: Session, student_id: str | None, name: str = "Student") -> m.Student:
-    if student_id:
-        s = db.get(m.Student, student_id)
+    sid = (student_id or "").strip() or None
+    clean_name = (name or "").strip() or "Student"
+    if sid:
+        s = db.get(m.Student, sid)
         if s:
             return s
-        s = m.Student(id=student_id, name=name)
+        s = m.Student(id=sid, name=clean_name)
     else:
-        s = m.Student(name=name)
+        s = m.Student(name=clean_name)
     db.add(s)
     db.commit()
     db.refresh(s)
@@ -261,7 +263,10 @@ def get_or_create_student(db: Session, student_id: str | None, name: str = "Stud
 
 
 def get_student(db: Session, student_id: str) -> m.Student | None:
-    return db.get(m.Student, student_id)
+    sid = (student_id or "").strip()
+    if not sid:
+        return None
+    return db.get(m.Student, sid)
 
 
 def list_students(db: Session, limit: int = 100) -> list[m.Student]:

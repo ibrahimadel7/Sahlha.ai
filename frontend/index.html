@@ -42,26 +42,27 @@ audio{width:100%;margin:8px 0}
 <header>
   <h1>Sahlha AI — Testing Frontend</h1>
   <input id="api" value="http://127.0.0.1:8000"/>
-  <button id="chk">Check health</button>
+  <input id="tkey" type="password" placeholder="Teacher key (if backend sets TEACHER_API_KEY)" style="min-width:220px"/>
+  <button type="button" id="chk">Check health</button>
   <span id="health">—</span>
-  <span class="muted">Detached from Streamlit · HTML/CSS/JS only · served at <a href="/app/" style="color:#7dd3fc">/app/</a></span>
+  <span class="muted">Standalone HTML/CSS/JS · served at <a href="/app/" style="color:#7dd3fc">/app/</a></span>
 </header>
 <div class="tabs">
-  <button data-tab="teacher" class="active">👩‍🏫 Teacher</button>
-  <button data-tab="student">🧑‍🎓 Student</button>
-  <button data-tab="debug">🛠️ Debug</button>
+  <button type="button" data-tab="teacher" class="active">👩‍🏫 Teacher</button>
+  <button type="button" data-tab="student">🧑‍🎓 Student</button>
+  <button type="button" data-tab="debug">🛠️ Debug</button>
 </div>
 <main>
   <section id="tab-teacher">
     <div class="card">
       <h2>1. Upload material → RAG ingestion</h2>
-      <div class="muted">Teacher creates courses & lessons — <b>lesson name is auto-extracted from PDF</b> if you leave lesson empty. Course is your grouping (e.g. python_101).</div>
+      <div class="muted">Teacher creates courses & lessons — <b>lesson name is auto-extracted from PDF</b> if you leave lesson empty. Course is your grouping (e.g. python_101). Ids are normalized to <code>lowercase_with_underscores</code>.</div>
       <div class="row">
         <input id="t_course" placeholder="course_id — e.g. python_101" value="python_101"/>
         <input id="t_lesson" placeholder="lesson_id — leave empty to auto-extract from PDF" value=""/>
         <input id="t_skill" placeholder="skill_id (optional)" value="python_elif"/>
         <input id="t_file" type="file" accept=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg"/>
-        <button class="primary" id="btnUpload">Upload + Process</button>
+        <button type="button" class="primary" id="btnUpload">Upload + Process</button>
       </div>
       <pre id="outUpload" style="display:none"></pre>
     </div>
@@ -71,8 +72,8 @@ audio{width:100%;margin:8px 0}
       <div class="muted">Agent decides count; slider is upper bound (max 6).</div>
       <div class="row">
         <label>max_skills <input id="t_max" type="range" min="1" max="6" value="6" oninput="this.nextElementSibling.textContent=this.value"/><span>6</span></label>
-        <button class="primary" id="btnExtract">Extract skills</button>
-        <button class="secondary" id="btnReload">Reload skills</button>
+        <button type="button" class="primary" id="btnExtract">Extract skills</button>
+        <button type="button" class="secondary" id="btnReload">Reload skills</button>
       </div>
       <div id="skillsBox"></div>
       <pre id="outExtract" style="display:none"></pre>
@@ -82,14 +83,14 @@ audio{width:100%;margin:8px 0}
       <h2>3. Generate one question bank per skill (10 questions each)</h2>
       <div class="row"><textarea id="t_feedback" placeholder="Teacher feedback (optional)"></textarea>
         <label>n per skill <input id="t_nq" type="range" min="4" max="15" value="10" oninput="this.nextElementSibling.textContent=this.value"/><span>10</span></label>
-        <button class="primary" id="btnGenBanks">Generate banks for all skills</button>
+        <button type="button" class="primary" id="btnGenBanks">Generate banks for all skills</button>
       </div>
       <pre id="outGen" style="display:none"></pre>
     </div>
 
     <div class="card">
       <h2>4. Review pending banks (human-in-the-loop, per skill)</h2>
-      <div class="row"><button class="secondary" id="btnPending">Refresh pending</button> <span id="pendingCount" class="badge">0 pending</span></div>
+      <div class="row"><button type="button" class="secondary" id="btnPending">Refresh pending</button> <span id="pendingCount" class="badge">0 pending</span></div>
       <div id="pendingBox"></div>
     </div>
   </section>
@@ -99,7 +100,7 @@ audio{width:100%;margin:8px 0}
   <section id="tab-student" style="display:none">
     <div class="card">
       <h2>Test directly — just type an ID</h2>
-      <div class="muted">No need to create a student first. Type any <code>student_id</code> + name and click <b>Load my skills</b> — the student is auto-created on first assessment.</div>
+      <div class="muted">No need to create a student first. Type any <code>student_id</code> + name and click <b>Load my skills</b> — the student is auto-created on first load.</div>
     </div>
     <div class="card">
       <h2>Learn skill by skill — each skill = explanation + exercise</h2>
@@ -113,14 +114,14 @@ audio{width:100%;margin:8px 0}
         <input id="s_course" value="" placeholder="or type course_id" list="coursesList"/>
         <label>Lesson <select id="s_lesson_sel"><option value="">— Select lesson —</option></select></label>
         <input id="s_lesson" value="" placeholder="or type lesson_id" list="lessonsList"/>
-        <button class="primary" id="btnLoad">Load my skills</button>
-        <button class="secondary" id="btnStudentRefresh">↻ Refresh courses</button>
+        <button type="button" class="primary" id="btnLoad">Load my skills</button>
+        <button type="button" class="secondary" id="btnStudentRefresh">↻ Refresh courses</button>
       </div>
       <div id="lessonOverview" style="display:none" class="card"></div>
       <div id="progressBox" style="display:none"><div class="progress"><i id="progBar"></i></div><div id="progText" class="muted"></div></div>
       <div id="studentBox"></div>
       <hr/>
-      <button class="secondary" id="btnPerf">Load performance</button>
+      <button type="button" class="secondary" id="btnPerf">Load performance</button>
       <pre id="outPerf" style="display:none"></pre>
     </div>
   </section>
@@ -128,7 +129,7 @@ audio{width:100%;margin:8px 0}
   <section id="tab-debug" style="display:none">
     <div class="card">
       <h2>Developer / debug panel</h2>
-      <div class="row"><button class="secondary" id="btnClearDbg">Clear</button> <span class="muted">Last agent trace / payloads</span></div>
+      <div class="row"><button type="button" class="secondary" id="btnClearDbg">Clear</button> <span class="muted">Last agent trace / payloads</span></div>
       <pre id="outDebug">No agent run captured yet.</pre>
     </div>
   </section>
@@ -136,6 +137,11 @@ audio{width:100%;margin:8px 0}
 <script>
 const $ = s=>document.querySelector(s);
 const api = ()=>$('#api').value.replace(/\/+$/,'');
+// Backend stores slugified course/lesson ids (lowercase, non [a-z0-9] -> '_').
+// Mirror that here so every call addresses the same lesson the upload stored.
+function slug(s){ return String(s??'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,''); }
+const courseIdOf = v => slug(v)||'general';
+const lessonIdOf = v => slug(v)||'lesson_1';
 let debugData=null;
 let studentState={progress:null, bundle:null, lesson:null, asm:{}, studied:{}};
 
@@ -143,6 +149,41 @@ function setHealth(t,ok){$('#health').textContent=t; $('#health').className=ok?'
 function j(o){return JSON.stringify(o,null,2);}
 function show(el, data){ el.style.display='block'; el.textContent = typeof data==='string'? data : j(data); debugData=data; $('#outDebug').textContent=j(data); }
 function errBox(el, msg){ el.style.display='block'; el.textContent=msg; el.style.color='#dc2626'; }
+function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Robust audio playback: surfaces HTTP/decode failures instead of failing silently.
+// The backend sniffs the real container (WAV vs MP3) and sends the matching
+// Content-Type, so we preserve it on the Blob and call load() before play().
+async function playAudioUrl(url, audioEl, btn, errEl){
+  const origText = btn ? btn.textContent : '';
+  try{
+    if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
+    if(btn){ btn.disabled=true; btn.textContent='⏳ Loading audio…'; }
+    const r=await fetch(url);
+    if(r.status===503) throw new Error('Audio needs GROQ_API_KEY (+ TTS terms) or OPENROUTER_API_KEY on the backend.');
+    if(!r.ok) throw new Error((await r.text()).slice(0,500) || ('HTTP '+r.status));
+    const mime=(r.headers.get('content-type')||'').split(';')[0].trim() || 'audio/wav';
+    const buf=await r.arrayBuffer();
+    if(!buf.byteLength) throw new Error('Empty audio response from server.');
+    const blob=new Blob([buf], {type: mime});
+    const oldSrc=audioEl.src;
+    const objUrl=URL.createObjectURL(blob);
+    audioEl.src=objUrl;
+    audioEl.style.display='block';
+    try{ audioEl.load(); }catch{}
+    if(oldSrc && oldSrc.startsWith('blob:')){ try{ URL.revokeObjectURL(oldSrc); }catch{} }
+    audioEl.onerror=()=>{ if(errEl){ errEl.style.display='block'; errEl.textContent='⚠️ Audio failed to decode ('+mime+'). Try again — the backend regenerates broken cache files on demand.'; } };
+    await audioEl.play();
+  }catch(e){
+    const msg=String(e && e.message || e);
+    // play() rejects with NotAllowedError when autoplay is blocked: the user can
+    // still press the native player button, so don't hide the element then.
+    if(/NotAllowedError|play\(\) request was interrupted/i.test(msg)){ try{ await audioEl.play().catch(()=>{}); }catch{} }
+    else if(errEl){ errEl.style.display='block'; errEl.textContent='⚠️ '+msg; }
+    else { alert(msg); }
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent=origText; }
+  }
+}
 async function apiGet(path, params){
   const u=new URL(api()+path);
   if(params) Object.entries(params).forEach(([k,v])=>{ if(v!=null&&v!=='') u.searchParams.set(k,v);});
@@ -152,7 +193,10 @@ async function apiGet(path, params){
   return d;
 }
 async function apiPost(path, body){
-  const r=await fetch(api()+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  const headers={'Content-Type':'application/json'};
+  const tk=$('#tkey')?.value?.trim();
+  if(tk) headers['X-API-Key']=tk;
+  const r=await fetch(api()+path,{method:'POST',headers,body:JSON.stringify(body||{})});
   const t=await r.text(); let d; try{d=JSON.parse(t)}catch{d=t}
   if(!r.ok) throw new Error(d.detail||t.slice(0,500));
   return d;
@@ -161,7 +205,10 @@ async function apiUpload(path, fields, file){
   const fd=new FormData();
   Object.entries(fields).forEach(([k,v])=>fd.append(k,v));
   fd.append('file', file, file.name);
-  const r=await fetch(api()+path,{method:'POST',body:fd});
+  const headers={};
+  const tk=$('#tkey')?.value?.trim();
+  if(tk) headers['X-API-Key']=tk;
+  const r=await fetch(api()+path,{method:'POST',headers,body:fd});
   const t=await r.text(); let d; try{d=JSON.parse(t)}catch{d=t}
   if(!r.ok) throw new Error(d.detail||t.slice(0,500));
   return d;
@@ -182,11 +229,13 @@ $('#chk').click();
 // Catalog dropdowns — Student picks from available courses/lessons; Teacher creates new ones
 async function loadCatalog(){
   try{
+    const scs=$('#s_course_sel');
+    const prevCourseSel=scs ? scs.value : '';
     const tree=await apiGet('/catalog/tree');
     const courses=tree.map(c=>c.course_id);
     const courseOpts=['<option value="">— Select course —</option>'].concat(courses.map(c=>`<option value="${c}">${c}</option>`)).join('');
     const dlCourses=courses.map(c=>`<option value="${c}">`).join('');
-    const scs=$('#s_course_sel'); if(scs) scs.innerHTML=courseOpts;
+    if(scs){ scs.innerHTML=courseOpts; if(prevCourseSel && courses.includes(prevCourseSel)) scs.value=prevCourseSel; }
     const dl=$('#coursesList'); if(dl) dl.innerHTML=dlCourses;
     // Preselect student if empty and courses exist (teacher creates, so don't overwrite teacher's typing)
     if(courses.length && !$('#s_course').value) { $('#s_course').value=courses[0]; }
@@ -196,20 +245,22 @@ async function loadCatalog(){
 async function loadLessonsFor(courseId, selId, inpId){
   const sel=$(selId), inp=$(inpId);
   if(!sel||!inp) return;
+  const prevSel=sel.value;
+  courseId=slug(courseId||'');
   if(!courseId){ sel.innerHTML='<option value="">— select a course first —</option>'; return; }
   try{
     const lessons=await apiGet('/catalog/lessons', {course_id: courseId});
     const opts=['<option value="">— Select lesson —</option>'].concat(lessons.map(l=>`<option value="${l.lesson_id}">${l.lesson_id}${l.title&&l.title!==l.lesson_id?' — '+l.title:''} (${l.skill_count} skills)</option>`)).join('');
     sel.innerHTML=opts;
+    // Restore the previous dropdown choice when it still exists (don't wipe selections on refresh).
+    const ids=lessons.map(l=>l.lesson_id);
+    if(prevSel && ids.includes(prevSel)) sel.value=prevSel;
+    if(ids.length && !inp.value) inp.value=ids[0];
     const dl=$('#lessonsList');
     try{
       const all=await apiGet('/catalog/lessons');
       if(dl) dl.innerHTML=all.map(l=>`<option value="${l.lesson_id}">`).join('');
     }catch{}
-    const ids=lessons.map(l=>l.lesson_id);
-    if(ids.length && (!inp.value || !ids.includes(inp.value))){
-      if(!inp.value) inp.value=ids[0];
-    }
   }catch(e){ sel.innerHTML='<option value="">— error —</option>'; }
 }
 function wireCatalog(){
@@ -224,19 +275,28 @@ wireCatalog();
 loadCatalog();
 
 
-// Teacher: upload — lesson auto-extracted from PDF if left empty
+// Teacher: upload — lesson auto-extracted from PDF if left empty.
+// Ids are slugified exactly like the backend stores them, so follow-up calls
+// (extract, banks, student) address the same lesson instead of missing it.
 $('#btnUpload').onclick=async()=>{
   const f=$('#t_file').files[0];
   if(!f) return alert('Select a file first');
-  if(!$('#t_course').value) return alert('Enter a course_id');
+  const typedCourse=$('#t_course').value.trim(), typedLesson=$('#t_lesson').value.trim();
+  if(!typedCourse) return alert('Enter a course_id');
   // lesson_id optional: backend will auto-extract from PDF text/filename if empty
-  const lessonVal = $('#t_lesson').value.trim() || 'lesson_1';
+  const courseVal=courseIdOf(typedCourse);
+  const lessonVal=typedLesson ? lessonIdOf(typedLesson) : 'lesson_1';
   const btn=$('#btnUpload'); btn.disabled=true; btn.textContent='Uploading…';
   try{
-    const d=await apiUpload('/documents/upload', {course_id:$('#t_course').value.trim(), lesson_id:lessonVal, skill_id:$('#t_skill').value.trim()||'general'}, f);
-    const extracted = d.lesson_id && d.lesson_id!==lessonVal ? ` (auto-extracted as "${d.lesson_id}")` : '';
-    show($('#outUpload'), {...d, _note: extracted || 'lesson_id as provided'});
-    if(d.lesson_id) { $('#t_lesson').value=d.lesson_id; if($('#t_lesson_sel')) $('#t_lesson_sel').value=d.lesson_id; }
+    const d=await apiUpload('/documents/upload', {course_id:courseVal, lesson_id:lessonVal, skill_id:$('#t_skill').value.trim()||'general'}, f);
+    // Adopt the effective ids so the whole UI addresses the stored lesson.
+    // Never silently swap: spell out every normalization applied to typed text.
+    const notes=[];
+    if(d.course_id && d.course_id!==typedCourse) notes.push(`course "${typedCourse}" → "${d.course_id}"`);
+    if(d.lesson_id && d.lesson_id!==typedLesson) notes.push(typedLesson ? `lesson "${typedLesson}" → "${d.lesson_id}"` : `lesson auto-extracted as "${d.lesson_id}"`);
+    show($('#outUpload'), {...d, _note: notes.join('; ') || 'ids as provided'});
+    if(d.course_id) $('#t_course').value=d.course_id;
+    if(d.lesson_id) $('#t_lesson').value=d.lesson_id;
     loadCatalog();
   }catch(e){ errBox($('#outUpload'), 'Error: '+e.message);} finally{ btn.disabled=false; btn.textContent='Upload + Process';}
 };
@@ -244,14 +304,14 @@ $('#btnUpload').onclick=async()=>{
 $('#btnExtract').onclick=async()=>{
   const b=$('#btnExtract'); b.disabled=true;
   try{
-    const d=await apiPost('/agent/extract-skills', {course_id:$('#t_course').value, lesson_id:$('#t_lesson').value, max_skills: parseInt($('#t_max').value), force:false});
+    const d=await apiPost('/agent/extract-skills', {course_id:courseIdOf($('#t_course').value), lesson_id:lessonIdOf($('#t_lesson').value), max_skills: parseInt($('#t_max').value), force:false});
     show($('#outExtract'),{...d, trace:undefined, skills:undefined});
     renderSkills(d.skills||[]);
   }catch(e){ errBox($('#outExtract'), 'Error: '+e.message);} finally{ b.disabled=false;}
 };
 $('#btnReload').onclick=async()=>{
   try{
-    const d=await apiGet('/agent/skills', {course_id:$('#t_course').value, lesson_id:$('#t_lesson').value});
+    const d=await apiGet('/agent/skills', {course_id:courseIdOf($('#t_course').value), lesson_id:lessonIdOf($('#t_lesson').value)});
     renderSkills(d);
   }catch(e){ alert(e.message);}
 };
@@ -259,7 +319,7 @@ function renderSkills(list){
   const box=$('#skillsBox'); box.innerHTML='';
   (list||[]).forEach(s=>{
     const d=document.createElement('details');
-    d.innerHTML=`<summary>${s.name} (<code>${s.skill_id}</code>)</summary><div>${s.description||''}</div><p><b>Explanation:</b> ${s.explanation||'<i>pending</i>'}</p><div class="muted">concepts: ${(s.key_concepts||[]).join(', ')}</div>`;
+    d.innerHTML=`<summary>${escapeHtml(s.name)} (<code>${escapeHtml(s.skill_id)}</code>)</summary><div>${escapeHtml(s.description||'')}</div><p><b>Explanation:</b> ${escapeHtml(s.explanation)||'<i>pending</i>'}</p><div class="muted">concepts: ${escapeHtml((s.key_concepts||[]).join(', '))}</div>`;
     box.appendChild(d);
   });
 }
@@ -267,7 +327,7 @@ function renderSkills(list){
 $('#btnGenBanks').onclick=async()=>{
   const b=$('#btnGenBanks'); b.disabled=true; b.textContent='Generating…';
   try{
-    const d=await apiPost('/agent/generate-lesson-banks', {course_id:$('#t_course').value, lesson_id:$('#t_lesson').value, teacher_feedback:$('#t_feedback').value, n_questions: parseInt($('#t_nq').value)});
+    const d=await apiPost('/agent/generate-lesson-banks', {course_id:courseIdOf($('#t_course').value), lesson_id:lessonIdOf($('#t_lesson').value), teacher_feedback:$('#t_feedback').value, n_questions: parseInt($('#t_nq').value)});
     show($('#outGen'), {lesson_id:d.lesson_id, num_skills:d.num_skills, banks:(d.banks||[]).map(x=>({...x,trace:undefined}))});
   }catch(e){ errBox($('#outGen'),'Error: '+e.message);} finally{ b.disabled=false; b.textContent='Generate banks for all skills';}
 };
@@ -281,11 +341,11 @@ async function loadPending(){
     for(const b of list){
       const det=await apiGet('/teacher/question-banks/'+b.id);
       const wrap=document.createElement('details'); wrap.open=false;
-      wrap.innerHTML=`<summary>Bank ${b.id.slice(0,8)} v${b.version} — ${b.course_id}/${b.lesson_id} / <code>${b.skill_id}</code> (${det.questions.length} Qs)</summary>`;
+      wrap.innerHTML=`<summary>Bank ${escapeHtml(b.id.slice(0,8))} v${b.version} — ${escapeHtml(b.course_id)}/${escapeHtml(b.lesson_id)} / <code>${escapeHtml(b.skill_id)}</code> (${det.questions.length} Qs)</summary>`;
       const qBox=document.createElement('div');
       det.questions.forEach(q=>{
         const qd=document.createElement('div'); qd.className='q';
-        qd.innerHTML=`<b>Q (${q.difficulty}, ${q.skill_id})</b>: ${q.question}<br/><code>correct=${q.correct_answer}</code> <span class="muted">${q.explanation||''}</span><br/><div>${q.options.map((o,i)=>`${i}. ${o}`).join('<br/>')}</div>`;
+        qd.innerHTML=`<b>Q (${escapeHtml(q.difficulty)}, ${escapeHtml(q.skill_id)})</b>: ${escapeHtml(q.question)}<br/><code>correct=${q.correct_answer}</code> <span class="muted">${escapeHtml(q.explanation||'')}</span><br/><div>${q.options.map((o,i)=>`${i}. ${escapeHtml(o)}`).join('<br/>')}</div>`;
         const row=document.createElement('div'); row.className='row';
         const inp=document.createElement('input'); inp.placeholder='Flag reason (optional)';
         const fbtn=document.createElement('button'); fbtn.textContent='🚩 Flag'; fbtn.className='secondary';
@@ -306,10 +366,10 @@ async function loadPending(){
 
 // Student
 $('#btnLoad').onclick=async()=>{
-  const sid=$('#s_id').value, sc=$('#s_course').value, sl=$('#s_lesson').value;
+  const sid=$('#s_id').value.trim(), sc=courseIdOf($('#s_course').value), sl=lessonIdOf($('#s_lesson').value);
   if(!sid||!sc||!sl) return alert('Fill student/course/lesson');
   try{
-    const prog=await apiGet('/students/'+encodeURIComponent(sid)+'/skill-progress', {course_id:sc, lesson_id:sl});
+    const prog=await apiGet('/students/'+encodeURIComponent(sid)+'/skill-progress', {course_id:sc, lesson_id:sl, student_name:$('#s_name').value});
     studentState.progress=prog; studentState.asm={}; studentState.studied={};
     try{
       const bundle=await apiGet('/agent/lesson', {course_id:sc, lesson_id:sl});
@@ -327,7 +387,20 @@ function renderStudent(){
   $('#progText').textContent=`${prog.completed}/${prog.total} skills completed`;
   if(studentState.lesson?.explanation){
     const o=$('#lessonOverview'); o.style.display='block';
-    o.innerHTML=`<b>📚 Lesson overview — read first</b><div><b>${studentState.lesson.title||''}</b></div><div>${studentState.lesson.explanation}</div>`;
+    o.innerHTML=`<b>📚 Lesson overview — read first</b><div><b>${escapeHtml(studentState.lesson.title||'')}</b></div><div>${escapeHtml(studentState.lesson.explanation)}</div>`;
+    // Lesson-level narration (GET /audio/lesson). Same robust playback as skills.
+    const lRow=document.createElement('div'); lRow.className='row'; lRow.style.marginTop='8px';
+    const lBtn=document.createElement('button'); lBtn.textContent='🔊 Listen to lesson overview'; lBtn.className='secondary';
+    const lAud=document.createElement('audio'); lAud.controls=true; lAud.preload='auto'; lAud.style.display='none'; lAud.style.width='100%';
+    const lErr=document.createElement('div'); lErr.className='err'; lErr.style.display='none';
+    lBtn.onclick=()=>{
+      const url=api()+'/audio/lesson?course_id='+encodeURIComponent(courseIdOf($('#s_course').value))+'&lesson_id='+encodeURIComponent(lessonIdOf($('#s_lesson').value));
+      playAudioUrl(url, lAud, lBtn, lErr);
+    };
+    lRow.appendChild(lBtn);
+    o.appendChild(lRow); o.appendChild(lAud); o.appendChild(lErr);
+  } else {
+    const o=$('#lessonOverview'); o.style.display='none'; o.innerHTML='';
   }
   const bundleMap={}; (studentState.bundle?.skills||[]).forEach(s=>bundleMap[s.skill_id]=s);
   const box=$('#studentBox'); box.innerHTML='';
@@ -335,36 +408,35 @@ function renderStudent(){
     const acc=sk.accuracy!=null?` — accuracy ${(sk.accuracy*100).toFixed(0)}%`:'';
     const status=sk.completed?'✅':(sk.has_explanation?'📖':'⏳');
     const det=document.createElement('details');
-    det.innerHTML=`<summary>${status} ${sk.name} (<code>${sk.skill_id}</code>)${acc}</summary>`;
+    det.innerHTML=`<summary>${status} ${escapeHtml(sk.name)} (<code>${escapeHtml(sk.skill_id)}</code>)${escapeHtml(acc)}</summary>`;
     const inner=document.createElement('div');
     // explanation
     let expl=(bundleMap[sk.skill_id]?.explanation)||'';
-    inner.innerHTML+=`<p><b>📖 Explanation — read this first:</b></p><div>${expl||'<i>No explanation yet.</i>'}</div>`;
+    inner.innerHTML+=`<p><b>📖 Explanation — read this first:</b></p><div>${escapeHtml(expl)||'<i>No explanation yet.</i>'}</div>`;
     // image
     const img=document.createElement('img'); img.className='skill'; img.style.display='none';
-    fetch(api()+'/images/skill?course_id='+encodeURIComponent($('#s_course').value)+'&lesson_id='+encodeURIComponent($('#s_lesson').value)+'&skill_id='+encodeURIComponent(sk.skill_id))
+    fetch(api()+'/images/skill?course_id='+encodeURIComponent(courseIdOf($('#s_course').value))+'&lesson_id='+encodeURIComponent(lessonIdOf($('#s_lesson').value))+'&skill_id='+encodeURIComponent(sk.skill_id))
       .then(r=>{ if(r.ok) return r.blob(); throw 0; }).then(b=>{ img.src=URL.createObjectURL(b); img.style.display='block'; }).catch(()=>{});
     inner.appendChild(img);
-    // audio
+    // audio (robust: keeps server MIME, load() before play, surfaces decode errors)
     const abtn=document.createElement('button'); abtn.textContent='🔊 Listen to explanation'; abtn.className='secondary'; abtn.disabled=!expl;
-    const aud=document.createElement('audio'); aud.controls=true; aud.style.display='none';
-    abtn.onclick=async()=>{
-      try{
-        const r=await fetch(api()+'/audio/skill?course_id='+encodeURIComponent($('#s_course').value)+'&lesson_id='+encodeURIComponent($('#s_lesson').value)+'&skill_id='+encodeURIComponent(sk.skill_id));
-        if(r.status===503) return alert('Audio needs GROQ_API_KEY (+ TTS terms) or OPENROUTER_API_KEY');
-        if(!r.ok) throw new Error(await r.text());
-        const b=await r.blob(); aud.src=URL.createObjectURL(b); aud.style.display='block'; aud.play();
-      }catch(e){ alert(e.message);}
+    const aud=document.createElement('audio'); aud.controls=true; aud.preload='auto'; aud.style.display='none'; aud.style.width='100%';
+    const aerr=document.createElement('div'); aerr.className='err'; aerr.style.display='none';
+    abtn.onclick=()=>{
+      const url=api()+'/audio/skill?course_id='+encodeURIComponent(courseIdOf($('#s_course').value))+'&lesson_id='+encodeURIComponent(lessonIdOf($('#s_lesson').value))+'&skill_id='+encodeURIComponent(sk.skill_id);
+      playAudioUrl(url, aud, abtn, aerr);
     };
-    inner.appendChild(abtn); inner.appendChild(aud);
-    inner.innerHTML+=`<div class="muted">Exercise bank: ${sk.bank_questions} approved questions | attempted: ${sk.attempted}</div>`;
+    inner.appendChild(abtn); inner.appendChild(aud); inner.appendChild(aerr);
+    // NOTE: use insertAdjacentHTML (not innerHTML+=) — the latter re-parses the
+    // subtree and silently drops the audio/image nodes + their listeners above.
+    inner.insertAdjacentHTML('beforeend', `<div class="muted">Exercise bank: ${sk.bank_questions} approved questions | attempted: ${sk.attempted}</div>`);
     if(!sk.exercise_ready){
-      inner.innerHTML+=`<div class="warn">Teacher hasn't approved this skill's bank yet.</div>`;
+      inner.insertAdjacentHTML('beforeend', `<div class="warn">Teacher hasn't approved this skill's bank yet.</div>`);
     } else if(!studentState.asm[sk.skill_id]){
       const sbtn=document.createElement('button'); sbtn.textContent="Start this skill's exercise (4 questions)"; sbtn.className='primary';
       sbtn.onclick=async()=>{
         try{
-          const payload=await apiPost('/assessment/start', {student_id:$('#s_id').value, student_name:$('#s_name').value, course_id:$('#s_course').value, lesson_id:$('#s_lesson').value, skill_id:sk.skill_id});
+          const payload=await apiPost('/assessment/start', {student_id:$('#s_id').value, student_name:$('#s_name').value, course_id:courseIdOf($('#s_course').value), lesson_id:lessonIdOf($('#s_lesson').value), skill_id:sk.skill_id});
           studentState.asm[sk.skill_id]=payload; studentState.studied[sk.skill_id]=false; renderStudent();
         }catch(e){ alert(e.message);}
       };
@@ -378,9 +450,9 @@ function renderStudent(){
         const answers={};
         (asm.questions||[]).forEach(q=>{
           const qd=document.createElement('div'); qd.className='q';
-          qd.innerHTML=`<b>${q.question}</b> <span class="badge">${q.difficulty}</span>`;
+          qd.innerHTML=`<b>${escapeHtml(q.question)}</b> <span class="badge">${escapeHtml(q.difficulty)}</span>`;
           q.options.forEach((o,i)=>{
-            const lab=document.createElement('label'); lab.innerHTML=`<input type="radio" name="${asm.assessment_id}_${q.id}" value="${i}"/> ${i}. ${o}`;
+            const lab=document.createElement('label'); lab.innerHTML=`<input type="radio" name="${escapeHtml(asm.assessment_id)}_${escapeHtml(q.id)}" value="${i}"/> ${i}. ${escapeHtml(o)}`;
             lab.querySelector('input').onchange=()=>{ answers[q.id]=i; };
             qd.appendChild(lab);
           });
@@ -397,7 +469,7 @@ function renderStudent(){
             delete studentState.asm[sk.skill_id];
             // refresh progress
             try{
-              const prog2=await apiGet('/students/'+encodeURIComponent($('#s_id').value)+'/skill-progress', {course_id:$('#s_course').value, lesson_id:$('#s_lesson').value});
+              const prog2=await apiGet('/students/'+encodeURIComponent($('#s_id').value.trim())+'/skill-progress', {course_id:courseIdOf($('#s_course').value), lesson_id:lessonIdOf($('#s_lesson').value), student_name:$('#s_name').value});
               studentState.progress=prog2; renderStudent();
             }catch{}
           }catch(e){ alert(e.message);}
@@ -410,7 +482,7 @@ function renderStudent(){
 }
 $('#btnPerf').onclick=async()=>{
   try{
-    const d=await apiGet('/students/'+encodeURIComponent($('#s_id').value)+'/performance');
+    const d=await apiGet('/students/'+encodeURIComponent($('#s_id').value.trim())+'/performance', {student_name:$('#s_name').value});
     const el=$('#outPerf'); el.style.display='block'; el.textContent=j(d);
   }catch(e){ alert(e.message);}
 };

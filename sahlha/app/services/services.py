@@ -26,18 +26,26 @@ def generate_bank(db: Session, *, course_id: str, lesson_id: str, skill_id: str,
 
 
 def extract_skills(db: Session, *, course_id: str, lesson_id: str,
-                   n_skills: int | None = None, max_skills: int = 6, force: bool = False) -> dict:
+                   n_skills: int | None = None, max_skills: int = 6, force: bool = False,
+                   include_media: bool = False) -> dict:
     """Agent splits the lesson into skills AND writes an explanation per skill.
 
     Also ensures the whole-lesson overview explanation exists.
+
+    Media (audio/images) is deferred by default: explanations are persisted
+    immediately and media generates lazily on demand via /audio + /images (both UIs
+    already fetch media per skill when the student opens it). Pass
+    include_media=True to block on media generation (used by media tests).
     """
     agent = SahlhaAgent(db, AgentState())
     out = agent.extract_skills(course_id=course_id, lesson_id=lesson_id,
                                max_skills=n_skills if n_skills is not None else max_skills,
                                force=force)
     explained = agent.explain_skills(course_id=course_id, lesson_id=lesson_id,
-                                     force=force or out.get("backend") != "existing")
-    lesson = agent.explain_lesson(course_id=course_id, lesson_id=lesson_id, force=force)
+                                     force=force or out.get("backend") != "existing",
+                                     include_media=include_media)
+    lesson = agent.explain_lesson(course_id=course_id, lesson_id=lesson_id, force=force,
+                                  include_media=include_media)
     return {"skills": explained["skills"], "lesson": lesson["lesson"],
             "extraction_backend": out.get("backend"), "trace": lesson["trace"]}
 
@@ -58,12 +66,16 @@ def get_lesson(db: Session, *, course_id: str, lesson_id: str) -> dict:
 
 
 def _skill_has_audio(s) -> bool:
-    import os as _os
-
     from sahlha.app.agent.tools import audio_tools as _audio_tools
 
-    return _os.path.exists(_audio_tools.expected_path(
-        _audio_tools.skill_audio_text(s.name or "", s.explanation or "")))
+    try:
+        return _audio_tools.has_cached_audio(
+            _audio_tools.skill_audio_text(s.name or "", s.explanation or ""))
+    except Exception:
+        import os as _os
+
+        return _os.path.exists(_audio_tools.expected_path(
+            _audio_tools.skill_audio_text(s.name or "", s.explanation or "")))
 
 
 def list_skills(db: Session, *, course_id: str, lesson_id: str,
@@ -105,9 +117,12 @@ def reject_bank(db: Session, bank_id: str, feedback: str = "") -> dict:
 def start_assessment(db: Session, *, student_id: str, student_name: str = "Student",
                      course_id: str | None = None, lesson_id: str | None = None,
                      skill_id: str | None = None) -> dict:
-    repo.get_or_create_student(db, student_id, student_name)
+    sid = (student_id or "").strip()
+    if not sid:
+        raise ValueError("student_id is required")
+    repo.get_or_create_student(db, sid, (student_name or "Student").strip() or "Student")
     agent = SahlhaAgent(db, AgentState())
-    return agent.start_assessment(student_id=student_id, course_id=course_id,
+    return agent.start_assessment(student_id=sid, course_id=course_id,
                                   lesson_id=lesson_id, skill_id=skill_id)
 
 
@@ -116,12 +131,16 @@ def submit_assessment(db: Session, *, assessment_id: str, answers: dict) -> dict
     return agent.submit_assessment(assessment_id=assessment_id, answers=answers)
 
 
-def student_performance(db: Session, student_id: str) -> dict:
-    student = repo.get_student(db, student_id)
-    if not student:
-        raise ValueError("Student not found")
-    attempts = repo.get_attempts(db, student_id)
-    perf = repo.get_skill_performance(db, student_id)
+def student_performance(db: Session, student_id: str, student_name: str = "Student") -> dict:
+    sid = (student_id or "").strip()
+    if not sid:
+        raise ValueError("student_id is required")
+    # Auto-create on first read so a fresh student_id never 404s in the
+    # Student tab ("Load my skills" / "Load performance" run before any
+    # assessment exists). Matches start_assessment's get-or-create behavior.
+    student = repo.get_or_create_student(db, sid, (student_name or "Student").strip() or "Student")
+    attempts = repo.get_attempts(db, sid)
+    perf = repo.get_skill_performance(db, sid)
     return {
         "student_id": student.id, "name": student.name,
         "attempts": [{"question_id": a.question_id, "assessment_id": a.assessment_id,
@@ -201,16 +220,19 @@ def create_student(db: Session, *, student_id: str | None = None, name: str = "S
     return {"id": s.id, "name": s.name, "created_at": s.created_at.isoformat()}
 
 
-def skill_progress(db: Session, *, student_id: str, course_id: str, lesson_id: str) -> dict:
+def skill_progress(db: Session, *, student_id: str, course_id: str, lesson_id: str,
+                   student_name: str = "Student") -> dict:
     """Skill = explanation + exercise: per-skill study/exercise status for one student.
 
     completed = student has attempted at least one full 4-question exercise for the skill.
+    Auto-creates unknown students so "Load my skills" works before the first assessment.
     """
     from sahlha.app.config import settings
 
-    student = repo.get_student(db, student_id)
-    if not student:
-        raise ValueError("Student not found")
+    sid = (student_id or "").strip()
+    if not sid:
+        raise ValueError("student_id is required")
+    student = repo.get_or_create_student(db, sid, (student_name or "Student").strip() or "Student")
     approved = repo.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id)
     by_skill: dict[str, list] = {}
     for q in approved:
@@ -221,7 +243,7 @@ def skill_progress(db: Session, *, student_id: str, course_id: str, lesson_id: s
         for q in questions:
             q_to_skill[q.id] = skill_id
     per_skill_attempts: dict[str, list] = {}
-    for a in repo.get_attempts(db, student_id, limit=10000):
+    for a in repo.get_attempts(db, sid, limit=10000):
         skid = q_to_skill.get(a.question_id)
         if skid:
             per_skill_attempts.setdefault(skid, []).append(a)
@@ -242,5 +264,5 @@ def skill_progress(db: Session, *, student_id: str, course_id: str, lesson_id: s
             "needs_review": bool(atts) and (correct / len(atts)) < 0.5,  # feedback loop 3
         })
     done = sum(1 for s in skills if s["completed"])
-    return {"student_id": student_id, "course_id": course_id, "lesson_id": lesson_id,
+    return {"student_id": student.id, "course_id": course_id, "lesson_id": lesson_id,
             "skills": skills, "completed": done, "total": len(skills)}

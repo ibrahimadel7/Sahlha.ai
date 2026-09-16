@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # Pexels image search (one related image per skill). Empty => image tool unavailable.
     pexels_api_key: str = ""
     image_dir: str = "./data/images"
+    teacher_api_key: str = ""
+
+    # Optional teacher gate: when TEACHER_API_KEY is set, mutating teacher
+    # endpoints (upload / extract / generate / approve / reject / flag) require
+    # header X-API-Key. Empty (dev/test default) => all requests allowed.
 
     chunk_size: int = 800
     chunk_overlap: int = 120

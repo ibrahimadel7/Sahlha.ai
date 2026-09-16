@@ -19,20 +19,30 @@ class ExtractedDocument:
 def _extract_pdf_native(data: bytes) -> tuple[str, int]:
     from pypdf import PdfReader
 
-    reader = PdfReader(io.BytesIO(data))
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except Exception as exc:
+        raise ValueError(f"Invalid or corrupt PDF file ({exc})")
     parts: list[str] = []
-    for page in reader.pages:
+    try:
+        pages = list(reader.pages)
+    except Exception as exc:
+        raise ValueError(f"Invalid or corrupt PDF file ({exc})")
+    for page in pages:
         try:
             parts.append(page.extract_text() or "")
         except Exception:
             parts.append("")
-    return "\n".join(parts), len(reader.pages)
+    return "\n".join(parts), len(pages)
 
 
 def _extract_docx(data: bytes) -> str:
     import docx
 
-    doc = docx.Document(io.BytesIO(data))
+    try:
+        doc = docx.Document(io.BytesIO(data))
+    except Exception as exc:
+        raise ValueError(f"Invalid or corrupt DOCX file ({exc})")
     return "\n".join(p.text for p in doc.paragraphs)
 
 

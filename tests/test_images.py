@@ -19,12 +19,13 @@ def test_build_image_query_from_skill_context():
     assert pexels.build_image_query({"name": "", "skill_id": "x", "key_concepts": []}) == "x"
 
 
-def _seed_skill(db_session):
+def _seed_skill(db_session, **kw):
     ingestion.ingest_upload(db_session, file_bytes=SAMPLE_TEXT.encode(), filename="elif.txt",
                             course_id="ic", lesson_id="il", skill_id="isk")
     from sahlha.app.services import services as svc
 
-    skills = svc.extract_skills(db_session, course_id="ic", lesson_id="il", max_skills=1)["skills"]
+    skills = svc.extract_skills(db_session, course_id="ic", lesson_id="il", max_skills=1,
+                                **kw)["skills"]
     return skills[0]["skill_id"]
 
 
@@ -61,8 +62,9 @@ def test_fetch_skill_image_caches(db_session, monkeypatch, tmp_path):
 
     calls: list = []
     monkeypatch.setattr(requests, "get", _fake_get_factory(calls))
-    # Seeding runs extract-skills, which now auto-generates the image (2 calls).
-    skid = _seed_skill(db_session)
+    # Seeding with include_media=True auto-generates the image during extraction (2 calls).
+    # (Default extract-skills defers media to lazy on-demand generation.)
+    skid = _seed_skill(db_session, include_media=True)
     assert len(calls) == 2
     first = image_tools.fetch_skill_image(db_session, course_id="ic", lesson_id="il", skill_id=skid)
     assert first["cached"] is True, "auto-generated during extraction; must hit cache"

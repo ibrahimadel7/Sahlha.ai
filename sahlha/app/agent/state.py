@@ -37,7 +37,7 @@ class AgentState(BaseModel):
     student_memory: dict[str, Any] = Field(default_factory=dict)
     assessment_result: dict[str, Any] = Field(default_factory=dict)
 
-    # Debug trace: every tool call + agent decision (surfaced in Streamlit debug panel)
+    # Debug trace: every tool call + agent decision (surfaced in the Debug tab)
     trace: list[dict[str, Any]] = Field(default_factory=list)
 
     def log(self, event: str, detail: Any = None) -> None:

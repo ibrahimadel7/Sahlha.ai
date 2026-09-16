@@ -20,17 +20,88 @@ def _voice_used(voice: str | None) -> str:
     return voice or os.getenv("GROQ_TTS_VOICE", settings.groq_tts_voice)
 
 
-def expected_path(text: str, voice: str | None = None) -> str:
-    """Deterministic cache path for a text (lets callers check has_audio w/o synth)."""
+def expected_path(text: str, voice: str | None = None, ext: str = "wav") -> str:
+    """Deterministic cache path for a text (lets callers check has_audio w/o synth).
+
+    ext selects the container ("wav" default for backward compat, "mp3" for the
+    OpenRouter fallback). The digest intentionally excludes ext so both
+    containers share one hash — _cached_or_synth probes both.
+    """
     from sahlha.app.config import settings
 
     v = _voice_used(voice)
     digest = hashlib.sha1(f"{settings.groq_tts_model}|{v}|{text}".encode()).hexdigest()[:16]
-    return os.path.join(settings.audio_dir, f"{digest}.wav")
+    ext = (ext or "wav").lstrip(".").lower() or "wav"
+    if ext not in ("wav", "mp3"):
+        ext = "wav"
+    return os.path.join(settings.audio_dir, f"{digest}.{ext}")
+
+
+def _cache_candidates(text: str, voice: str | None) -> list[str]:
+    """Both possible cache files for one text (wav + mp3 share the digest)."""
+    return [expected_path(text, voice, "wav"), expected_path(text, voice, "mp3")]
+
+
+def has_cached_audio(text: str, voice: str | None = None) -> bool:
+    """True when either container is cached (honest has_audio flag)."""
+    return any(os.path.exists(p) for p in _cache_candidates(text, voice))
 
 
 def skill_audio_text(name: str, explanation: str) -> str:
     return f"{name}. {explanation}"
+
+
+def _repair_cached_file(path: str) -> str:
+    """Repair a cached audio file in place; returns the (possibly moved) path.
+
+    - A `.wav` file holding MP3 bytes (old OpenRouter cache) is renamed to `.mp3`.
+    - A WAV with placeholder streaming sizes is re-encoded with a clean header.
+    Repairs are best-effort: failures return the original path untouched.
+    """
+    try:
+        if not os.path.exists(path):
+            return path
+        with open(path, "rb") as fh:
+            data = fh.read()
+        if not data:
+            return path
+        # Mislabeled MP3 → move to the .mp3 sibling so MIME/extension agree.
+        if path.lower().endswith(".wav") and tts.sniff_audio_format(data) == "mp3":
+            mp3_path = path[:-4] + ".mp3"
+            try:
+                if os.path.exists(mp3_path):
+                    os.remove(path)
+                else:
+                    os.replace(path, mp3_path)
+                return mp3_path
+            except OSError:
+                return path
+        # Broken WAV header → normalize in place.
+        if path.lower().endswith(".wav") and tts.is_broken_wav(data):
+            try:
+                fixed = tts.normalize_wav(data)
+                if fixed != data:
+                    with open(path, "wb") as fh:
+                        fh.write(fixed)
+            except Exception:
+                pass
+            return path
+    except Exception:
+        pass
+    return path
+
+
+def _sniff_path_media(path: str) -> tuple[str, str]:
+    """(extension_format, mime) for a cache file, sniffed from bytes."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(16)
+        fmt = tts.sniff_audio_format(head)
+    except Exception:
+        fmt = "unknown"
+    if fmt == "mp3":
+        return "mp3", "audio/mpeg"
+    return "wav", "audio/wav"
 
 
 def _cached_or_synth(text: str, voice: str | None) -> tuple[str, str, bool]:
@@ -38,13 +109,43 @@ def _cached_or_synth(text: str, voice: str | None) -> tuple[str, str, bool]:
 
     os.makedirs(settings.audio_dir, exist_ok=True)
     voice_used = _voice_used(voice)
-    path = expected_path(text, voice_used)
-    if os.path.exists(path):
-        return path, voice_used, True
-    wav, voice_used = tts.synthesize(text, voice)
+    # Serve from either container; also self-heal old mislabeled/broken files.
+    for candidate in _cache_candidates(text, voice_used):
+        if os.path.exists(candidate):
+            fixed = _repair_cached_file(candidate)
+            # Repair may have moved .wav → .mp3; re-probe the other candidate too.
+            if fixed != candidate and os.path.exists(fixed):
+                return fixed, voice_used, True
+            if os.path.exists(candidate):
+                return candidate, voice_used, True
+            # Fall through: the file was moved — check the sibling below.
+            for sibling in _cache_candidates(text, voice_used):
+                if os.path.exists(sibling):
+                    return _repair_cached_file(sibling), voice_used, True
+    wav, synth_voice = tts.synthesize(text, voice)
+    fmt = tts.sniff_audio_format(wav)
+    ext = "mp3" if fmt == "mp3" else "wav"
+    # Normalize fresh WAVs so cached files are always browser-playable.
+    if ext == "wav":
+        try:
+            wav = tts.normalize_wav(wav)
+        except Exception:
+            pass
+    path = expected_path(text, voice_used, ext)
     with open(path, "wb") as fh:
         fh.write(wav)
-    return path, voice_used, False
+    return path, synth_voice, False
+
+
+def _audio_result(path: str, voice_used: str, cached: bool, extra: dict) -> dict:
+    fmt, mime = _sniff_path_media(path)
+    stem = os.path.basename(path)
+    for suffix in (".wav", ".mp3"):
+        if stem.lower().endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return {"audio_id": stem, "path": path, "format": fmt, "media_type": mime,
+            "voice": voice_used, "cached": cached, **extra}
 
 
 def skill_explanation_to_audio(db: Session, *, course_id: str, lesson_id: str,
@@ -57,9 +158,8 @@ def skill_explanation_to_audio(db: Session, *, course_id: str, lesson_id: str,
         raise ValueError(f"Skill {skill_id} has no explanation yet — run extract-skills first")
     text = skill_audio_text(skill.name, skill.explanation)
     path, voice_used, cached = _cached_or_synth(text, voice)
-    return {"audio_id": os.path.basename(path).replace(".wav", ""), "path": path,
-            "skill_id": skill_id, "voice": voice_used, "cached": cached,
-            "chars": len(text)}
+    return _audio_result(path, voice_used, cached,
+                         {"skill_id": skill_id, "chars": len(text)})
 
 
 def lesson_explanation_to_audio(db: Session, *, course_id: str, lesson_id: str,
@@ -70,6 +170,5 @@ def lesson_explanation_to_audio(db: Session, *, course_id: str, lesson_id: str,
         raise ValueError(f"Lesson {course_id}/{lesson_id} has no explanation yet — run explain-lesson first")
     text = f"{row.title}. {row.explanation}" if row.title else row.explanation
     path, voice_used, cached = _cached_or_synth(text, voice)
-    return {"audio_id": os.path.basename(path).replace(".wav", ""), "path": path,
-            "lesson_id": lesson_id, "voice": voice_used, "cached": cached,
-            "chars": len(text)}
+    return _audio_result(path, voice_used, cached,
+                         {"lesson_id": lesson_id, "chars": len(text)})

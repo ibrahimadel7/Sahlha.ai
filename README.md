@@ -48,7 +48,7 @@ sahlha/
     │   └── repositories/          # ONLY layer (besides services) touching the ORM
     ├── schemas/api.py             # FastAPI request models
     └── services/services.py       # business logic (routes stay thin)
-streamlit_app.py                   # test client: teacher / student / debug tabs
+frontend/index.html                # testing frontend (Teacher / Student / Debug tabs, served at /app)
 tests/                             # test_rag, test_questions, test_assessment, test_api_loop
 data/                              # sqlite db, uploads, vectorizer (gitignored)
 ```
@@ -101,7 +101,7 @@ Three closed loops; the LLM reasons, the app enforces:
   **studies the lesson, then the skills, before the exercise**. Correct answers never leave the server.
 - `submit_assessment()`: per-question `evaluate_answer()` → `record_attempt()` →
   `update_student_memory()` → phase `ADAPTATION`.
-- Every phase transition and tool call is appended to `state.trace` (shown in the Streamlit debug tab).
+- Every phase transition and tool call is appended to `state.trace` (shown in the Debug tab).
 
 ## 3. Tool list & responsibilities
 
@@ -202,11 +202,12 @@ copy .env.example .env   # add GROQ_API_KEY to enable the real LLM; optional
 python -m uvicorn sahlha.app.main:app --reload --port 8000
 ```
 
-## 8. Run Streamlit
+## 8. Open the frontend
 
-```powershell
-$env:SAHLHA_API = "http://127.0.0.1:8000"
-streamlit run streamlit_app.py
+The testing frontend is served by the API itself — no extra process needed:
+
+```text
+http://127.0.0.1:8000/app
 ```
 
 ## 9. Test the complete loop
@@ -217,7 +218,7 @@ python -m pytest tests/ -q   # 11 tests: RAG, generation, approve, reject→v2, 
                              # one-bank-per-skill, skill banks approve+assess, skill HTTP endpoints
 ```
 
-Manual loop in Streamlit: **Teacher** tab → upload file → Extract skills (agent decides the
+Manual loop in the browser: **Teacher** tab → upload file → Extract skills (agent decides the
 count; review explanations) → Generate 10-question banks (one per skill) → approve each →
 **Student** tab → load the lesson's skills → per skill: read its explanation →
 start its 4-question exercise → submit → progress bar tracks completed skills →

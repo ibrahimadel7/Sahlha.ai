@@ -9,7 +9,7 @@
 - **LLM Provider:** Groq (`GROQ_API_KEY` + `GROQ_MODEL=llama-3.3-70b-versatile` via native `groq` SDK + OpenAI-compatible fallback). Without a key the whole loop works via deterministic grounded fallback generators — no mock.
 - **Entry points:**
   - API: `sahlha/app/main.py` → `uvicorn sahlha.app.main:app --reload --port 8000`
-  - Client: `streamlit_app.py` → Teacher / Student / Debug tabs
+  - Client: `frontend/index.html` (served at `/app/`) → Teacher / Student / Debug tabs
 
 ---
 
@@ -59,7 +59,7 @@ Upload → OCR/Ingest → RAG index
 | **LLM – offline** | Deterministic grounded fallback generators | `sahlha/app/agent/llm.py:109` | `fallback_questions/skills/explanation/lesson/critique` — never hallucinates |
 | **TTS** | Groq Orpheus `canopylabs/orpheus-v1-english` (voice `troy`) | `sahlha/app/audio/tts.py` + `sahlha/app/config.py:25` | Chunked at 900 chars, WAV stitch, hash-cache `data/audio/` |
 | **Images** | Pexels API (landscape photo per skill) | `sahlha/app/images/pexels.py` + `sahlha/app/agent/tools/image_tools.py` | Query=`name + key_concepts`, cache `data/images/`, `503` when no key |
-| **Frontend** | Streamlit `>=1.33` | `streamlit_app.py:1` | Teacher / Student / Debug tabs, not production UI |
+| **Frontend** | Static HTML/CSS/JS (`frontend/index.html`, served at `/app/`) | `sahlha/app/main.py:46` | Teacher / Student / Debug tabs, not production UI |
 | **HTTP client** | `requests` (app) + `httpx` (tests) | `requirements.txt:13` |  |
 | **Testing** | `pytest>=8.0` | `tests/` | 11+ tests, full loop via `TestClient` |
 
@@ -147,7 +147,9 @@ Sahlha.ai/
 │   │
 │   └── __init__.py
 │
-├── streamlit_app.py                   # Test client (3 tabs)  streamlit_app.py:1
+├── frontend/
+│   └── index.html                     # Test client (3 tabs, served at /app/)  frontend/index.html:1
+│
 ├── tests/                             # pytest suite — see §9
 │   ├── conftest.py
 │   ├── test_rag.py / test_rag_proper.py
@@ -186,7 +188,7 @@ Sahlha.ai/
 ```
 ┌──────────────────────────────────────────────┐
 │  Presentation:  FastAPI routes (api/)        │  ← HTTP validation, OpenAPI, no logic
-│                 Streamlit (streamlit_app.py) │  ← teacher/student/debug UI
+│                 Static SPA (frontend/)         │  ← teacher/student/debug UI at /app/
 ├──────────────────────────────────────────────┤
 │  Application:   services/services.py         │  ← orchestration, transactions, status mapping
 │                 agent/agent.py (SahlhaAgent) │  ← state-machine workflow, phase gating
@@ -273,7 +275,7 @@ SKILL_EXTRACTION ─► SKILL_EXPLANATION ─► LESSON_EXPLANATION
 ```
 
 - `AgentState` fields — `sahlha/app/agent/state.py:22`: `student_id, teacher_id, course/lesson/skill_id, current_phase, retrieved_context, skills[], current_question_ids[], current_answers{}, student_memory{}, assessment_result{}, trace[]`.
-- Every transition and tool call appends to `trace` (`AgentState.log()` / `transition()`), surfaced in Streamlit Debug tab and API responses.
+- Every transition and tool call appends to `trace` (`AgentState.log()` / `transition()`), surfaced in the Debug tab and API responses.
 - Idempotency: `extract_skills(..., force=False)` returns existing skills; `explain_skills` skips already-explained rows (still fills media gaps).
 
 ### 4.4 RAG Architecture — `sahlha/app/rag/*`
@@ -371,15 +373,14 @@ Both are **non-fatal**: explanation succeeds even when TTS/image fails; image/au
 
 ---
 
-## 5. Frontend — `streamlit_app.py:1`
+## 5. Frontend — `frontend/index.html:1`
 
-Streamlit is a **test client, not production UI** — `SAHLHA_API` env points to FastAPI (default `http://127.0.0.1:8000`).
+The static SPA is a **test client, not production UI** — served by the API itself at `/app/`
+(no extra process; the header `API` input points to FastAPI, default `http://127.0.0.1:8000`).
 
 - **👩‍🏫 Teacher tab** — upload+process, extract skills (slider = upper bound cap 6), reload skills, generate N banks, review pending banks (per-question flag + per-bank approve/reject+feedback), `trace` + chunk metadata surfaced.
-- **🧑‍🎓 Student tab** — `skill_progress` bar, study bundle fetch (`GET /agent/lesson` single bundle), per-skill: image → explanation → 🔊 Listen → gated checkbox ("I've read") → start 4Q exercise → radio answers (no default) → submit → mastery warning + score + re-fetched progress; `performance` loader.
+- **🧑‍🎓 Student tab** — catalog-aware course/lesson pickers, `skill_progress` bar, study bundle fetch (`GET /agent/lesson` single bundle), per-skill: image → explanation → 🔊 Listen → gated checkbox ("I've read") → start 4Q exercise → radio answers (no default) → submit → mastery warning + score + re-fetched progress; `performance` loader.
 - **🛠️ Debug tab** — raw `trace` events + `selection_meta`, `skill_performance`, `retrieved_chunks`, `backend`, etc.
-
-Timeouts: upload 300s, skill extraction 180s, lesson-bank gen 300s, audio 180s, image 120s. Errors rendered via `_api_error`.
 
 ---
 
@@ -411,8 +412,7 @@ Timeouts: upload 300s, skill extraction 180s, lesson-bank gen 300s, audio 180s, 
 pip install -r requirements.txt
 copy .env.example .env   # fill GROQ_API_KEY for real LLM, PEXELS_API_KEY for images
 python -m uvicorn sahlha.app.main:app --reload --port 8000
-$env:SAHLHA_API = "http://127.0.0.1:8000"
-streamlit run streamlit_app.py
+# open http://127.0.0.1:8000/app
 ```
 
 Without `GROQ_API_KEY`, the agent auto-falls back — the UI and tests still pass.
@@ -466,5 +466,5 @@ Test map:
 - Services: `sahlha/app/services/services.py`
 - Routes: `sahlha/app/api/routes_*.py`
 - Media: `sahlha/app/audio/tts.py`, `sahlha/app/images/pexels.py`
-- App client: `streamlit_app.py:1`
+- App client: `frontend/index.html:1` (served at `/app/`)
 - Tests: `tests/*`

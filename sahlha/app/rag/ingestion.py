@@ -62,6 +62,8 @@ def ingest_upload(db: Session, *, file_bytes: bytes, filename: str,
         raise ValueError("File too large (max 25MB)")
     # Extract text first so we can auto-derive lesson_id from PDF content when user left it default
     extracted = extract_document_text(file_bytes, filename)
+    if not extracted.text.strip():
+        raise ValueError("Empty file: no extractable text found (upload a non-empty pdf/txt/docx/image)")
     # Auto-extract lesson_id from PDF if user didn't provide a meaningful one
     lesson_id = _extract_lesson_id(filename, extracted.text, lesson_id)
     course_id = (course_id or "general").strip() or "general"

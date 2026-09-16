@@ -7,6 +7,8 @@ from sahlha.app.database.database import get_db
 from sahlha.app.schemas.api import FlagRequest, ReviewRequest
 from sahlha.app.services import services as svc
 
+from sahlha.app.api.deps import require_teacher
+
 router = APIRouter(prefix="/teacher", tags=["teacher"])
 
 
@@ -24,7 +26,8 @@ def bank_detail(bank_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/question-banks/{bank_id}/approve")
-def approve(bank_id: str, db: Session = Depends(get_db)):
+def approve(bank_id: str, db: Session = Depends(get_db),
+            _teacher: None = Depends(require_teacher)):
     try:
         return svc.approve_bank(db, bank_id)
     except ValueError as exc:
@@ -32,7 +35,8 @@ def approve(bank_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/question-banks/{bank_id}/reject")
-def reject(bank_id: str, req: ReviewRequest, db: Session = Depends(get_db)):
+def reject(bank_id: str, req: ReviewRequest, db: Session = Depends(get_db),
+           _teacher: None = Depends(require_teacher)):
     try:
         return svc.reject_bank(db, bank_id, req.feedback)
     except ValueError as exc:
@@ -40,7 +44,8 @@ def reject(bank_id: str, req: ReviewRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/questions/{question_id}/flag")
-def flag_question(question_id: str, req: FlagRequest, db: Session = Depends(get_db)):
+def flag_question(question_id: str, req: FlagRequest, db: Session = Depends(get_db),
+                  _teacher: None = Depends(require_teacher)):
     """Flag one bad question: excluded from future assessments, reason feeds regeneration."""
     try:
         return svc.flag_question(db, question_id=question_id, reason=req.reason)

@@ -66,6 +66,16 @@ class TfidfEmbeddingModel:
 
 
 _embeddings = None
+_lock = None
+
+
+def _init_lock():
+    global _lock
+    if _lock is None:
+        import threading
+
+        _lock = threading.Lock()
+    return _lock
 
 
 def get_embeddings():
@@ -73,11 +83,16 @@ def get_embeddings():
     global _embeddings
     if _embeddings is not None:
         return _embeddings
-    try:
-        _embeddings = DenseEmbeddingModel()
-    except Exception:
-        _embeddings = TfidfEmbeddingModel()
-    return _embeddings
+    # Locked: concurrent first requests must share one model load (~9s),
+    # not each pay it (lifespan warms this in background, but may race requests).
+    with _init_lock():
+        if _embeddings is not None:
+            return _embeddings
+        try:
+            _embeddings = DenseEmbeddingModel()
+        except Exception:
+            _embeddings = TfidfEmbeddingModel()
+        return _embeddings
 
 
 def dense_available() -> bool:

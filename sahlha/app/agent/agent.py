@@ -11,6 +11,8 @@ Flow per phase:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from sqlalchemy.orm import Session
 
 from sahlha.app.agent.llm import (
@@ -80,18 +82,29 @@ class SahlhaAgent:
         st.skills = skills
         return {"skills": skills, "backend": backend, "trace": st.trace}
 
-    def explain_skills(self, *, course_id: str, lesson_id: str, force: bool = False) -> dict:
-        """Agent writes a grounded explanation for every skill of the lesson."""
+    def explain_skills(self, *, course_id: str, lesson_id: str, force: bool = False,
+                       include_media: bool = True) -> dict:
+        """Agent writes a grounded explanation for every skill of the lesson.
+
+        With include_media=False explanations are persisted immediately and audio/images
+        are left for lazy on-demand generation (fast path for bulk flows like extract-skills).
+        """
         st = self.state
         st.transition(Phase.SKILL_EXPLANATION)
         rows = repo.list_skills(self.db, course_id=course_id, lesson_id=lesson_id)
         out = []
+        # Phase 1 (main thread — owns the DB session): retrieval + prompt building.
+        jobs: list[tuple] = []
         for row in rows:
             if row.explanation and not force:
                 # Chain: skill tool -> explanation tool -> audio/image tools (fills gaps).
                 skill = self._skill_to_dict(row)
-                skill["media"] = skill_tools.skill_media(self.db, course_id=course_id,
-                                                         lesson_id=lesson_id, skill_id=row.skill_id)
+                if include_media:
+                    skill["media"] = skill_tools.skill_media(self.db, course_id=course_id,
+                                                             lesson_id=lesson_id, skill_id=row.skill_id)
+                else:
+                    skill["media"] = {"image": {"status": "skipped", "reason": "deferred"},
+                                      "audio": {"status": "skipped", "reason": "deferred"}}
                 st.log("media:skill", {"skill_id": row.skill_id, "media": skill["media"]})
                 out.append(skill)
                 continue
@@ -101,27 +114,47 @@ class SahlhaAgent:
                 top_k=3, course_id=course_id, lesson_id=lesson_id)
             system, user = build_skill_explanation_prompt(course_id=course_id, lesson_id=lesson_id,
                                                           skill=skill, context_chunks=chunks)
-            try:
-                data, backend = complete_json(system, user)
-                text = SkillExplanation(explanation=(data.get("explanation") if isinstance(data, dict) else data)).explanation
-            except RuntimeError:
-                text, backend = fallback_explanation(skill, chunks), "fallback(no-api-key)"
-            except Exception as exc:
-                text, backend = fallback_explanation(skill, chunks), f"fallback(llm-error: {exc})"
+            jobs.append((skill, chunks, system, user))
+        # Phase 2 (worker threads — pure network LLM calls, no DB access): fan out so
+        # N skills cost ~1 LLM round-trip instead of N sequential ones (~5s each).
+        if jobs:
+            def _generate(job: tuple) -> tuple:
+                skill, chunks, system, user = job
+                try:
+                    data, backend = complete_json(system, user)
+                    text = SkillExplanation(explanation=(data.get("explanation") if isinstance(data, dict) else data)).explanation
+                except RuntimeError:
+                    text, backend = fallback_explanation(skill, chunks), "fallback(no-api-key)"
+                except Exception as exc:
+                    text, backend = fallback_explanation(skill, chunks), f"fallback(llm-error: {exc})"
+                return skill, text, backend
+
+            with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as pool:
+                generated = list(pool.map(_generate, jobs))
+        else:
+            generated = []
+        # Phase 3 (main thread): persist, then reassemble in skill order.
+        by_id: dict[str, dict] = {s["skill_id"]: s for s in out}
+        for skill, text, backend in generated:
             st.log("llm:explain_skill", {"skill_id": skill["skill_id"], "backend": backend})
             # Chain: skill tool -> explanation tool -> audio + image tools.
             bundle = skill_tools.setup_skill(self.db, course_id=course_id, lesson_id=lesson_id,
-                                             skill_id=skill["skill_id"], explanation_text=text)
+                                             skill_id=skill["skill_id"], explanation_text=text,
+                                             include_media=include_media)
             st.log("media:skill", {"skill_id": skill["skill_id"], "media": bundle["media"]})
-            out.append(bundle)
+            by_id[skill["skill_id"]] = bundle
+        out = [by_id[row.skill_id] for row in rows]
         st.skills = out
         return {"skills": out, "trace": st.trace}
 
-    def explain_lesson(self, *, course_id: str, lesson_id: str, force: bool = False) -> dict:
+    def explain_lesson(self, *, course_id: str, lesson_id: str, force: bool = False,
+                       include_media: bool = True) -> dict:
         """Agent writes one grounded overview explanation for the whole lesson.
 
         Persistence + audio fan-out go through the explanation tool:
         explanation tool -> audio tool.
+        With include_media=False the overview is persisted immediately and audio is
+        left for lazy on-demand generation (fast path for bulk flows like extract-skills).
         """
         from sahlha.app.agent.tools import explanation_tools as _expl_tools
 
@@ -132,8 +165,11 @@ class SahlhaAgent:
             if existing and existing.explanation:
                 st.log("lesson_explanation:existing", {"lesson_id": lesson_id})
                 lesson = self._lesson_to_dict(existing)
-                lesson["media"] = _expl_tools.ensure_lesson_media(self.db, course_id=course_id,
-                                                                  lesson_id=lesson_id)
+                if include_media:
+                    lesson["media"] = _expl_tools.ensure_lesson_media(self.db, course_id=course_id,
+                                                                      lesson_id=lesson_id)
+                else:
+                    lesson["media"] = {"audio": {"status": "skipped", "reason": "deferred"}}
                 st.log("media:lesson", {"lesson_id": lesson_id, "media": lesson["media"]})
                 return {"lesson": lesson, "backend": "existing", "trace": st.trace}
         chunks = rag_tools.retrieve_lesson(self.db, course_id, lesson_id, top_k=5)
@@ -157,7 +193,8 @@ class SahlhaAgent:
         res = _expl_tools.explain_lesson(self.db, course_id=course_id, lesson_id=lesson_id,
                                          title=payload.get("title", ""),
                                          explanation_text=payload.get("explanation", ""),
-                                         key_concepts=payload.get("key_concepts", []))
+                                         key_concepts=payload.get("key_concepts", []),
+                                         include_media=include_media)
         lesson = {**res["lesson"], "media": res["media"]}
         st.log("media:lesson", {"lesson_id": lesson_id, "media": lesson["media"]})
         return {"lesson": lesson, "backend": backend, "trace": st.trace}
@@ -174,7 +211,8 @@ class SahlhaAgent:
         st = self.state
         if not repo.list_skills(self.db, course_id=course_id, lesson_id=lesson_id):
             self.extract_skills(course_id=course_id, lesson_id=lesson_id)
-            self.explain_skills(course_id=course_id, lesson_id=lesson_id)
+            # Banks don't need media: persist explanations now, audio/images fill in lazily.
+            self.explain_skills(course_id=course_id, lesson_id=lesson_id, include_media=False)
         banks = []
         for row in repo.list_skills(self.db, course_id=course_id, lesson_id=lesson_id):
             banks.append(self.generate_question_bank(

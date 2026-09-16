@@ -103,7 +103,10 @@ def _call_groq(system: str, user: str, api_key: str, model: str) -> tuple[str, s
     try:
         from groq import Groq  # native SDK when installed
 
-        client = Groq(api_key=api_key)
+        # Explicit timeout: SDK defaults would otherwise stall the request for minutes.
+        # max_retries=1: on 429/5xx fail fast to the OpenRouter backup instead of
+        # burning time on SDK-internal backoff (Groq TPD quotas exhaust quickly).
+        client = Groq(api_key=api_key, timeout=60, max_retries=1)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -119,7 +122,7 @@ def _call_groq(system: str, user: str, api_key: str, model: str) -> tuple[str, s
     from sahlha.app.config import settings as _s
 
     base_url = os.getenv("GROQ_BASE_URL", _s.groq_base_url)
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=1)
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -141,7 +144,7 @@ def _call_openrouter(system: str, user: str) -> tuple[str, str]:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
     model = os.getenv("OPENROUTER_MODEL", settings.openrouter_model)
     base_url = os.getenv("OPENROUTER_BASE_URL", settings.openrouter_base_url)
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=1)
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -173,7 +176,7 @@ def _call_llm(system: str, user: str) -> tuple[str, str]:
 
         from sahlha.app.config import settings
 
-        kwargs: dict = {"api_key": api_key}
+        kwargs: dict = {"api_key": api_key, "timeout": 60, "max_retries": 1}
         if settings.openai_base_url:
             kwargs["base_url"] = settings.openai_base_url
         client = OpenAI(**kwargs)

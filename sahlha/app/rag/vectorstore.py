@@ -125,9 +125,15 @@ def search(db: Session, query: str, *, top_k: int = 5,
     from sahlha.app.config import settings
 
     top_k = top_k or settings.top_k_retrieval
+    has_filters = bool(course_id or lesson_id or skill_id)
     chunks = repo.get_chunks(db, course_id=course_id or None, lesson_id=lesson_id or None,
                              skill_id=skill_id or None, document_id=None)
     if not chunks:
+        # Scoped queries must not leak across lessons: return empty so callers
+        # can fall back to the requested lesson (not the global corpus).
+        # Only unfiltered queries may search globally.
+        if has_filters:
+            return []
         chunks = repo.get_chunks(db)  # fall back to global search
     if not chunks:
         return []

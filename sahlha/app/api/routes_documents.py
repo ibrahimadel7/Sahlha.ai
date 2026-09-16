@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from sahlha.app.database.database import SessionLocal, get_db
 from sahlha.app.services import services as svc
 
+from sahlha.app.api.deps import require_teacher
+
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
@@ -28,7 +30,7 @@ def _background_warm_index() -> None:
 def upload_document(course_id: str = Form("general"), lesson_id: str = Form("lesson_1"),
                     skill_id: str = Form("general"), file: UploadFile = File(...),
                     background_tasks: BackgroundTasks = None,
-                    db: Session = Depends(get_db)):
+                    db: Session = Depends(get_db), _teacher: None = Depends(require_teacher)):
     # file.file.read can block for large uploads; cap at 25MB already enforced in ingestion
     data = file.file.read()
     try:

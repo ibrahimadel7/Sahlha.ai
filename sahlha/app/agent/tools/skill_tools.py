@@ -23,14 +23,17 @@ def register_skill(db: Session, *, course_id: str, lesson_id: str, skill_data: d
 
 
 def setup_skill(db: Session, *, course_id: str, lesson_id: str,
-                skill_id: str, explanation_text: str) -> dict:
+                skill_id: str, explanation_text: str, include_media: bool = True) -> dict:
     """Attach an explanation to a skill via the explanation tool.
 
     This is the chain: skill tool -> explanation tool -> audio + image tools.
+    With include_media=False the explanation is persisted immediately and media is
+    left for lazy on-demand generation (fast path for bulk flows like extract-skills).
     Returns the full skill bundle including media statuses.
     """
     res = explanation_tools.explain_skill(db, course_id=course_id, lesson_id=lesson_id,
-                                          skill_id=skill_id, explanation_text=explanation_text)
+                                          skill_id=skill_id, explanation_text=explanation_text,
+                                          include_media=include_media)
     row = repo.get_skill(db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
     return {**_to_dict(row), "media": res["media"]}
 

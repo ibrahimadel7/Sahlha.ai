@@ -60,6 +60,79 @@ def _is_wav(data: bytes) -> bool:
     return data.startswith(b"RIFF")
 
 
+def sniff_audio_format(data: bytes) -> str:
+    """Detect actual audio container from magic bytes (not extension/MIME).
+
+    Returns "wav", "mp3" or "unknown". Groq returns WAV, OpenRouter returns MP3
+    (or PCM converted to WAV), so callers must sniff instead of assuming WAV.
+    """
+    if not data or len(data) < 4:
+        return "unknown"
+    if data.startswith(b"RIFF"):
+        return "wav"
+    if data.startswith(b"ID3"):
+        return "mp3"
+    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        return "mp3"
+    return "unknown"
+
+
+def audio_mime_for_bytes(data: bytes) -> str:
+    """MIME type matching the actual bytes (for FileResponse / blob playback)."""
+    return "audio/mpeg" if sniff_audio_format(data) == "mp3" else "audio/wav"
+
+
+def normalize_wav(data: bytes) -> bytes:
+    """Rewrite a WAV with a clean header.
+
+    Groq streams WAVs with placeholder RIFF sizes (nframes=2**31-1), which makes
+    browsers show a broken duration and refuse to play single-chunk audio.
+    Re-encoding through the wave module fixes the header without touching PCM.
+    Non-WAV input raises ValueError; unparseable WAV is returned as-is.
+    """
+    if not _is_wav(data):
+        raise ValueError("not a WAV file")
+    try:
+        with wave.open(io.BytesIO(data), "rb") as r:
+            nchannels = r.getnchannels()
+            sampwidth = r.getsampwidth()
+            framerate = r.getframerate()
+            # getnframes() may be a streaming placeholder (2**31-1); readframes
+            # returns whatever bytes are actually present.
+            frames = r.readframes(r.getnframes())
+    except Exception:
+        return data
+    if not frames:
+        return data
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(nchannels)
+        w.setsampwidth(sampwidth)
+        w.setframerate(framerate)
+        w.writeframes(frames)
+    return out.getvalue()
+
+
+def is_broken_wav(data: bytes) -> bool:
+    """True when a WAV header carries placeholder sizes (needs normalize_wav)."""
+    if not _is_wav(data):
+        return False
+    try:
+        with wave.open(io.BytesIO(data), "rb") as r:
+            nframes = r.getnframes()
+            # Placeholder sentinels observed from streaming TTS providers.
+            if nframes >= 2**30:
+                return True
+            # Cross-check header frame count against actual byte length.
+            expected = len(data) - 44
+            actual_frames = nframes * r.getnchannels() * r.getsampwidth()
+            if abs(actual_frames - expected) > max(1024, expected // 10):
+                return True
+    except Exception:
+        return True
+    return False
+
+
 def _pcm_to_wav(pcm: bytes, framerate: int = 24000, nchannels: int = 1, sampwidth: int = 2) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -92,9 +165,19 @@ def split_for_tts(text: str, max_chars: int = 900) -> list[str]:
 
 
 def stitch_wavs(wavs: list[bytes]) -> bytes:
-    """Concatenate WAV blobs with identical params into one WAV (pure — unit tested)."""
+    """Concatenate WAV blobs with identical params into one WAV (pure — unit tested).
+
+    Single-chunk input is normalized (clean RIFF header) so short explanations
+    play in browsers — Groq streams placeholder sizes otherwise.
+    """
     if len(wavs) == 1:
-        return wavs[0]
+        only = wavs[0]
+        if _is_wav(only):
+            try:
+                return normalize_wav(only)
+            except Exception:
+                return only
+        return only
     readers = [wave.open(io.BytesIO(w), "rb") for w in wavs]
     params = readers[0].getparams()
     for r in readers[1:]:
@@ -114,7 +197,9 @@ def stitch_wavs(wavs: list[bytes]) -> bytes:
 def _synthesize_chunk(text: str, *, api_key: str, model: str, voice: str) -> bytes:
     from groq import Groq
 
-    client = Groq(api_key=api_key)
+    # Explicit timeout: fail fast to the OpenRouter backup instead of hanging.
+    # max_retries=1: don't burn time on SDK-internal backoff when throttled.
+    client = Groq(api_key=api_key, timeout=90, max_retries=1)
     resp = client.audio.speech.create(model=model, voice=voice, input=text,
                                       response_format="wav")
     # Groq SDK returns HttpxBinaryResponseContent with .read()
@@ -135,7 +220,7 @@ def _synthesize_chunk_openrouter(text: str, *, api_key: str, model: str, voice: 
     from sahlha.app.config import settings as _s
 
     base_url = os.getenv("OPENROUTER_BASE_URL", _s.openrouter_base_url)
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=90, max_retries=1)
     # OpenRouter TTS per docs: response_format only mp3|pcm (wav is invalid → ZodError).
     # Also try candidate models if the configured one is not available for this key/tier.
     candidates = [model]
@@ -224,13 +309,16 @@ def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
                 pass  # keep alloy
             chunks = split_for_tts(text, _s2.groq_tts_max_chars)
             wavs = [_synthesize_chunk_openrouter(c, api_key=or_key, model=model, voice=voice_or) for c in chunks]
-            # Stitch: wav → wave, mp3 → byte join
+            # Stitch by actual container: WAV chunks are re-encoded with a clean
+            # header, MP3 chunks are byte-joined. Never serve MP3 as WAV.
             if wavs and all(_is_wav(w) for w in wavs):
                 return stitch_wavs(wavs), voice_or
+            if wavs and all(sniff_audio_format(w) == "mp3" for w in wavs):
+                return b"".join(wavs), voice_or
             try:
                 return stitch_wavs(wavs), voice_or
             except Exception:
-                # Likely mp3 chunks — simple concatenation is valid for MP3
+                # Mixed/unknown containers — join raw; callers sniff the MIME.
                 return b"".join(wavs), voice_or
         except Exception as exc2:
             if groq_key:

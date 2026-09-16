@@ -22,19 +22,24 @@ def pexels_available() -> bool:
 
 def build_image_query(skill: dict) -> str:
     """Query from the skill's context: name + key concepts (pure — unit tested)."""
-    # Detect programming/code topics and map to more relevant Pexels queries
     raw_name = skill.get("name", "")
     raw_concepts = list(skill.get("key_concepts", [])[:3])
-    # If skill is about Python/code, avoid "python" snake ambiguity
-    text_blob = f"{raw_name} {' '.join(raw_concepts)}".lower()
-    is_code = any(w in text_blob for w in ["python", "elif", "if else", "function", "loop", "code", "programming", "algorithm"])
-    if is_code:
-        # Use education/technology code queries that return relevant images
-        return "programming education technology"
     parts = [raw_name] + raw_concepts
     query = re.sub(r"\s+", " ", " ".join(p for p in parts if p)).strip(" ,.-")
     query = re.sub(r"\(.*?\)", "", query).strip()  # drop "(lesson)" style suffixes
-    return re.sub(r"\s+", " ", query).strip()[:120] or skill.get("skill_id", "education")
+    query = re.sub(r"\s+", " ", query).strip()
+    if not query:
+        return skill.get("skill_id", "education")
+    # Disambiguate programming topics for the photo search ("python" the snake vs
+    # the language) while KEEPING the skill-specific terms — a generic fallback
+    # would give every code skill the same picture.
+    text_blob = f"{raw_name} {' '.join(raw_concepts)}".lower()
+    is_code = any(w in text_blob for w in ["python", "elif", "if else", "function", "loop", "code", "programming", "algorithm"])
+    if is_code:
+        query = re.sub(r"(?i)\bpython\b", "programming", query).strip()
+        if not re.search(r"(?i)\b(programming|code|software|computer)\b", query):
+            query = f"{query} programming code".strip()
+    return query[:120] or skill.get("skill_id", "education")
 
 
 def _api_key() -> str:

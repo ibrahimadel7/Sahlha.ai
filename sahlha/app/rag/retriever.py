@@ -16,8 +16,3 @@ def retrieve(db: Session, query: str, *, top_k: int = 5,
 def retrieve_lesson(db: Session, course_id: str, lesson_id: str, top_k: int = 5) -> list[dict]:
     return retrieve(db, f"lesson {lesson_id} course {course_id} overview key concepts",
                     top_k=top_k, course_id=course_id, lesson_id=lesson_id)
-
-
-def retrieve_skill(db: Session, skill_id: str, top_k: int = 5) -> list[dict]:
-    return retrieve(db, f"skill {skill_id} definition examples usage",
-                    top_k=top_k, skill_id=skill_id)

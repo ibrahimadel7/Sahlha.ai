@@ -96,8 +96,9 @@ def get_embeddings():
 
 
 def dense_available() -> bool:
+    """True when the active backend is dense. Reuses the cached model — a fresh
+    SentenceTransformer per call would reload ~90MB of weights from disk."""
     try:
-        DenseEmbeddingModel()
-        return True
+        return get_embeddings().name.startswith("dense")
     except Exception:
         return False

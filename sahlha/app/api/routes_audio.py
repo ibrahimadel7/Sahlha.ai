@@ -12,6 +12,8 @@ router = APIRouter(prefix="/audio", tags=["audio"])
 
 
 def _to_file(result: dict) -> FileResponse:
+    from sahlha.app.audio import tts as _tts
+
     path = result["path"]
     # Sniff the actual container: old caches may hold MP3 bytes under a .wav
     # name. Serving MP3 as audio/wav makes <audio> fail silently.
@@ -19,11 +21,8 @@ def _to_file(result: dict) -> FileResponse:
     try:
         with open(path, "rb") as fh:
             head = fh.read(16)
-        if head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
-            media_type = "audio/mpeg"
-        elif head.startswith(b"RIFF"):
-            media_type = "audio/wav"
-        elif path.lower().endswith(".mp3"):
+        media_type = _tts.audio_mime_for_bytes(head)
+        if _tts.sniff_audio_format(head) == "unknown" and path.lower().endswith(".mp3"):
             media_type = "audio/mpeg"
     except Exception:
         pass

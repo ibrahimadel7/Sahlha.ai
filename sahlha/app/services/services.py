@@ -206,6 +206,115 @@ def list_students(db: Session, limit: int = 100) -> list[dict]:
     return [{"id": s.id, "name": s.name, "created_at": s.created_at.isoformat()} for s in repo.list_students(db, limit=limit)]
 
 
+def list_courses(db: Session) -> list[str]:
+    """Distinct course_ids that have any content (for catalog dropdowns)."""
+    return repo.list_courses(db)
+
+
+def list_lessons(db: Session, course_id: str | None = None) -> list[dict]:
+    """Distinct lessons, optionally filtered by course."""
+    return repo.list_lessons(db, course_id=course_id)
+
+
+def catalog_tree(db: Session) -> list[dict]:
+    """Full tree: [{course_id, lessons: [...]}] for catalog dropdowns."""
+    return [{"course_id": cid, "lessons": repo.list_lessons(db, course_id=cid)}
+            for cid in repo.list_courses(db)]
+
+
+# ---------- LangGraph teacher content workflow ----------
+def run_content_workflow(db: Session, *, course_id: str, lesson_id: str,
+                         teacher_feedback: str = "", n_questions: int = 10,
+                         max_skills: int = 6, force: bool = False,
+                         include_media: bool = False) -> dict:
+    """Run the teacher content pipeline as a LangGraph workflow.
+
+    Runs retrieve → extract → explain → generate, then pauses at the teacher
+    gate (`interrupt`). Returns a snapshot including `thread_id`; the teacher
+    resumes with `teacher_decide()`. Classic per-bank endpoints keep working
+    on the same banks independently.
+    """
+    import uuid
+
+    from sahlha.app.workflow import nodes as _nodes
+    from sahlha.app.workflow.graph import get_graph
+    from sahlha.app.workflow.state import initial_state
+
+    course_id = (course_id or "").strip()
+    lesson_id = (lesson_id or "").strip()
+    if not course_id or not lesson_id:
+        raise ValueError("course_id and lesson_id are required")
+    thread_id = f"content:{course_id}:{lesson_id}:{uuid.uuid4().hex[:8]}"
+    config = {"configurable": {"thread_id": thread_id}}
+    token = _nodes._db.set(db)
+    try:
+        get_graph().invoke(initial_state(
+            course_id=course_id, lesson_id=lesson_id,
+            teacher_feedback=teacher_feedback or "", n_questions=n_questions,
+            max_skills=max_skills, force=force, include_media=include_media), config)
+    finally:
+        _nodes._db.reset(token)
+    return workflow_snapshot(db, thread_id=thread_id)
+
+
+def workflow_snapshot(db: Session, *, thread_id: str) -> dict:
+    """Current state of a workflow run (works paused, finished, or failed)."""
+    from sahlha.app.workflow.graph import get_graph
+
+    thread_id = (thread_id or "").strip()
+    if not thread_id:
+        raise ValueError("thread_id is required")
+    config = {"configurable": {"thread_id": thread_id}}
+    snap = get_graph().get_state(config)
+    values = dict(snap.values or {})
+    if not values:
+        raise ValueError(f"Workflow {thread_id} not found")
+    pending = list(snap.next or ())
+    status = "waiting_for_teacher" if pending else values.get("status", "unknown")
+    return {
+        "thread_id": thread_id,
+        "status": status,
+        "waiting_on": pending,
+        "course_id": values.get("course_id", ""),
+        "lesson_id": values.get("lesson_id", ""),
+        "num_chunks": values.get("num_chunks", 0),
+        "skills": values.get("skills", []),
+        "lesson": values.get("lesson"),
+        "banks": values.get("banks", []),
+        "teacher_decision": values.get("teacher_decision", {}),
+        "regeneration_attempts": values.get("regeneration_attempts", 0),
+        "error": values.get("error", ""),
+        "trace": values.get("trace", []),
+    }
+
+
+def teacher_decide(db: Session, *, thread_id: str, action: str, feedback: str = "") -> dict:
+    """Resume a paused workflow run with the teacher's approve/reject decision."""
+    from langgraph.types import Command
+
+    from sahlha.app.workflow import nodes as _nodes
+    from sahlha.app.workflow.graph import get_graph
+
+    thread_id = (thread_id or "").strip()
+    if not thread_id:
+        raise ValueError("thread_id is required")
+    if action not in ("approve", "reject"):
+        raise ValueError(f"action must be approve|reject, got {action!r}")
+    config = {"configurable": {"thread_id": thread_id}}
+    snap = get_graph().get_state(config)
+    if not (snap.values or {}):
+        raise ValueError(f"Workflow {thread_id} not found")
+    if not snap.next:
+        raise ValueError(f"Workflow {thread_id} is not waiting for a decision "
+                         f"(status={snap.values.get('status', '?')})")
+    token = _nodes._db.set(db)
+    try:
+        get_graph().invoke(Command(resume={"action": action, "feedback": feedback or ""}), config)
+    finally:
+        _nodes._db.reset(token)
+    return workflow_snapshot(db, thread_id=thread_id)
+
+
 def create_student(db: Session, *, student_id: str | None = None, name: str = "Student") -> dict:
     if not name or not name.strip():
         raise ValueError("Student name is required")

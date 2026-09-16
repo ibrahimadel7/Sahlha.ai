@@ -53,11 +53,13 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
     per_bank: dict[str, int] = {}
 
     def _take(group: list[dict], cands: list[dict], reason: str):
+        taken = {s["id"] for s in group}
         for q in cands:
             if len(group) >= n_per_bank:
                 break
-            if q["id"] not in {s["id"] for s in group}:
+            if q["id"] not in taken:
                 group.append(q)
+                taken.add(q["id"])
                 rationale.append(f"{q['id']} (bank={q['bank_id']}, {q['skill_id']}/{q['difficulty']}): {reason}")
 
     for bank_id, group_pool in banks.items():
@@ -69,17 +71,14 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
         by_id = {q["id"]: q for q in group_pool}
         group: list[dict] = []
         _take(group, [by_id[i] for i in failed_ids if i in by_id], "retry previously failed")
-        _take(group, [q for q in group_pool if q["skill_id"] in weak_skills
-                      and q["id"] not in {s["id"] for s in group}], "targets weak skill")
-        _take(group, [q for q in group_pool if q["id"] not in seen_ids
-                      and q["id"] not in {s["id"] for s in group}], "unseen question")
+        _take(group, [q for q in group_pool if q["skill_id"] in weak_skills], "targets weak skill")
+        _take(group, [q for q in group_pool if q["id"] not in seen_ids], "unseen question")
         have = {q["difficulty"] for q in group}
         for diff in ("easy", "medium", "hard"):
             if len(group) >= n_per_bank:
                 break
             if diff not in have:
-                _take(group, [q for q in group_pool if q["difficulty"] == diff
-                              and q["id"] not in {s["id"] for s in group}],
+                _take(group, [q for q in group_pool if q["difficulty"] == diff],
                       f"balances difficulty ({diff})")
         _take(group, group_pool, "fill remainder")
         selected.extend(group[:n_per_bank])
@@ -101,6 +100,7 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
     return selected, {"rationale": rationale, "weak_skills": sorted(weak_skills),
                       "failed_retried": sorted(failed_ids & {s["id"] for s in selected}),
                       "per_bank": per_bank, "n_per_bank": n_per_bank,
+                      "pool_size": len(pool),
                       "flagged_excluded": len(flagged),
                       "covered_skills": covered_skills, "missing_skills": missing_skills}
 
@@ -121,7 +121,8 @@ def evaluate_answer(question: dict, student_answer) -> dict:
 
 
 def record_attempt(db: Session, *, student_id: str, question_id: str, assessment_id: str,
-                   answer, correct: bool) -> dict:
+                   answer, correct: bool, commit: bool = True) -> dict:
     att = repo.record_attempt(db, student_id=student_id, question_id=question_id,
-                              assessment_id=assessment_id, answer=answer, correct=correct)
+                              assessment_id=assessment_id, answer=answer, correct=correct,
+                              commit=commit)
     return {"attempt_id": att.id, "correct": att.correct}

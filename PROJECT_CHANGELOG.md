@@ -632,3 +632,38 @@ Post-MVP Working Tree (2026-09-15 audit):
 ## Maintenance Rule (from this point forward)
 
 1. Implement change. 2. Verify against code. 3. Append a new dated entry (never rewrite history unless factually wrong). 4. Keep entries chronological with `files/components` and `Architecture Impact old→new`. 5. Mark `Implemented / Partially Implemented / Planned / Deprecated` honestly.
+
+---
+
+## 2026-09-16 — E2E audit + fix pass (submit batching, start dedup, image query)
+
+### Type
+- Fix / Performance / Backend
+
+### What Changed
+- Fixed failing `tests/test_images.py::test_build_image_query_from_skill_context`: `pexels.build_image_query` no longer replaces code-topic queries with a generic string — it keeps the skill-specific terms and only disambiguates whole-word "python" → "programming" (plus a "programming code" suffix when no code token is present). Files: `sahlha/app/images/pexels.py`.
+- `submit_assessment`: batch-loads the assessment's questions (`repo.get_questions_by_ids`) and banks (`repo.get_banks_by_ids`) once, then records attempts + memory with `commit=False` and a single final commit. Measured for an 8-question assessment: ~95 → ~35 SQL statements, 17 → 1 commits, ~71ms → ~21ms. Files: `sahlha/app/agent/agent.py`, `sahlha/app/database/repositories/repositories.py` (+`commit` flags on `record_attempt`/`upsert_skill_performance`, defaults `True` so other callers are unchanged), `sahlha/app/agent/tools/assessment_tools.py` + `student_tools.py` (passthrough).
+- `start_assessment`: removed the duplicate `get_approved_questions` call (pool is loaded once inside `select_questions`; count now comes from additive `selection_meta.pool_size`), and collapsed three per-question `get_bank` loops into one batched `get_banks_by_ids` map plus one skill lookup per distinct skill. Measured: 24 → ~21 statements per start. Files: `sahlha/app/agent/agent.py`, `sahlha/app/agent/tools/assessment_tools.py`.
+- `skill_tools._to_dict.has_audio` now uses `audio_tools.has_cached_audio` (wav+mp3), matching `services.list_skills` — previously wav-only, so mp3-cached skills disagreed between endpoints. Files: `sahlha/app/agent/tools/skill_tools.py`.
+- `embeddings.dense_available()` reuses the cached `get_embeddings()` backend instead of constructing (and weight-loading) a fresh `SentenceTransformer` per call. Files: `sahlha/app/rag/embeddings.py`.
+- `POST /documents/upload` reads at most 25MB+1 into memory and rejects oversized files before buffering (ingestion's exact check remains as second line of defense). Files: `sahlha/app/api/routes_documents.py`.
+- Aligned stale `llama-3.3-70b-versatile` fallback strings with the configured `openai/gpt-oss-120b` default. Files: `sahlha/app/agent/llm.py`.
+
+### Why
+- Full E2E audit (isolated-DB harness + SQL/commit counters) showed submit's commit-per-row + expiry cascade as the dominant backend cost, start's duplicate pool load + N×3 bank lookups as secondary, one red test, and two small inconsistencies. Deliberately NOT changed: vectorstore caching (measured 0.5ms npz load vs 11.8ms query encode — not a bottleneck), MMR/retrieval, agent phases, media chain, prompts, selection heuristics, frontend structure.
+
+### Implementation
+- Old flow: submit = per-question `db.get` + `get_bank` + committed `record_attempt` + committed `upsert` (each commit expiring ORM state → cascading re-SELECTs). New flow: 2 batched SELECTs → N flushed row writes → 1 commit.
+- Old flow: start = agent `get_approved_questions` + select's own + 3×N `get_bank` + N `get_skill`. New flow: select's pool + 1 `get_banks_by_ids` + ≤#skills `get_skill` (+ slug fallback preserved).
+
+### Architecture Impact
+- None — same layers, same endpoints, same response shapes (+ additive `selection_meta.pool_size`). Old flow: (N commits, N×3 lookups) → New flow: (1 commit, batched lookups).
+
+### Dependencies / Technologies
+- None added.
+
+### Status
+- Implemented
+
+### Notes
+- E2E verified before + after in both fallback (no-key) and mocked-LLM provider modes: upload → extract → banks → approve → start → submit → adaptivity → reject/regen → flag exclusion → skill-progress → error cases (empty upload, unknown ids, double submit, empty student, audio/image 503, oversized upload). `50 passed` (`49 passed + 1 failed` before the image-query fix).

@@ -3,7 +3,7 @@
 The fallback generator is grounded (builds questions from retrieved chunks via
 templates) so the full loop works offline. When GROQ_API_KEY is set, real
 LLM structured generation is used via Groq's OpenAI-compatible endpoint.
-Set GROQ_MODEL to pick the model (default: llama-3.3-70b-versatile).
+Set GROQ_MODEL to pick the model (default: openai/gpt-oss-120b).
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _resolve_provider() -> tuple[str, str, str]:
             return "openai", oai_key, settings.openai_model
     except Exception:
         if os.getenv("GROQ_API_KEY"):
-            return "groq", os.getenv("GROQ_API_KEY", ""), os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            return "groq", os.getenv("GROQ_API_KEY", ""), os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
         if os.getenv("OPENROUTER_API_KEY"):
             return "openrouter", os.getenv("OPENROUTER_API_KEY", ""), os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
         if os.getenv("OPENAI_API_KEY"):
@@ -211,18 +211,84 @@ def _extract_json_array(text: str) -> list:
     raise ValueError("LLM did not return parseable JSON")
 
 
+# --- Deterministic incidental-content guard (shared by fallbacks + critique) ---
+# Conservative: a sentence is incidental only when it LOOKS like document metadata/
+# admin text. Instructional sentences that merely contain a name/date/place are kept
+# (over-filtering guard: names/dates/places are valid when they ARE the lesson topic).
+_INCIDENTAL_RE = re.compile(
+    r"(prepared\s+by|written\s+by|authored\s+by|teacher\s*:|instructor\s*:|author\s*:|"
+    r"\bschool\b|\buniversity\b|\bcollege\b|\binstitute\b|\bacademy\b|"
+    r"page\s*\d+|\bp\.?\s*\d+\b|table\s+of\s+contents|\breferences?\b|\bbibliography\b|"
+    r"all\s+rights\s+reserved|copyright\s*©|submitted\s+(by|to)|roll\s*(no|number)|"
+    r"\bdate\s*:)",
+    re.IGNORECASE,
+)
+_METADATA_QUESTION_RE = re.compile(
+    r"(who\s+(prepared|wrote|authored|teaches?)|teacher'?s?\s+name|author'?s?\s+name|"
+    r"which\s+school|school'?s?\s+name|university\s+name|what\s+page|which\s+page|"
+    r"page\s+number|reference\s+(list|number)|\bprepared\s+by\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_incidental_sentence(sent: str) -> bool:
+    """True only for probable document-metadata/admin sentences.
+
+    Requires a metadata marker AND (short length OR no instructional signal) so a
+    genuine lesson sentence like 'Einstein, born in 1879, proposed relativity' is kept:
+    it has instructional verbs/content beyond the marker. Pure 'Prepared by Ahmed Hassan.'
+    or 'Al-Noor School, page 4.' lines are dropped.
+    """
+    s = (sent or "").strip()
+    if not s:
+        return True
+    if not _INCIDENTAL_RE.search(s):
+        return False
+    words = s.split()
+    # Short metadata lines are almost always incidental.
+    if len(words) <= 20:
+        return True
+    # Longer lines: keep when they carry instructional signal (concept verbs).
+    instructional = re.search(
+        r"\b(is|are|means?|defines?|explains?|describes?|causes?|converts?|controls?|"
+        r"executes?|runs?|checks?|tests?|uses?|requires?|produces?|process|example|because|"
+        r"when|if\b)", s, re.IGNORECASE)
+    return not bool(instructional)
+
+
+def _instructional_sentences(context_chunks: list[dict]) -> list[tuple[str, object]]:
+    """(sentence, skill) pairs with incidental/metadata sentences removed."""
+    from sahlha.app.rag.text import split_sentences as _split_sentences
+
+    out: list[tuple[str, object]] = []
+    for c in context_chunks:
+        for s in _split_sentences(c.get("text", "")):
+            if len(s.split()) >= 6 and not _is_incidental_sentence(s):
+                out.append((s, c.get("skill_id")))
+    return out
+
+
 def fallback_questions(context_chunks: list[dict], skill_id: str, n: int = 8,
                        feedback: str = "") -> list[dict]:
-    """Deterministic grounded generator: builds MCQs from chunk sentences."""
-    import re as _re
+    """Deterministic grounded generator: builds MCQs from instructional sentences only.
 
-    sentences: list[str] = []
+    Incidental/metadata sentences are skipped so document metadata never becomes a
+    question. If the material exists but is ALL incidental, returns [] (insufficient
+    instructional context) instead of inventing metadata questions. If there are no
+    usable sentences at all (empty/short input), keeps the legacy generic placeholder
+    so the offline loop never breaks on near-empty retrieval.
+    """
+    from sahlha.app.rag.text import split_sentences as _split_sentences
+
+    usable: list[tuple[str, object]] = []
     for c in context_chunks:
-        for s in _re.split(r"(?<=[.!?])\s+", c.get("text", "")):
-            s = s.strip()
+        for s in _split_sentences(c.get("text", "")):
             if len(s.split()) >= 6:
-                sentences.append((s, c.get("skill_id") or skill_id))
+                usable.append((s, c.get("skill_id") or skill_id))
+    sentences = [(s, sk) for s, sk in usable if not _is_incidental_sentence(s)]
     if not sentences:
+        if usable:
+            return []  # material exists but is all metadata -> refuse, don't launder it
         sentences = [("The lesson introduces key concepts and examples.", skill_id)]
 
     wants_hard = "hard" in feedback.lower() or "difficult" in feedback.lower() or "practical" in feedback.lower()
@@ -292,15 +358,9 @@ def complete_json(system: str, user: str) -> tuple[dict | list, str]:
 
 
 def _sentences(chunks: list[dict]) -> list[str]:
-    import re as _re
+    from sahlha.app.rag.text import long_sentences as _long_sentences
 
-    out: list[str] = []
-    for c in chunks:
-        for s in _re.split(r"(?<=[.!?])\s+", c.get("text", "")):
-            s = s.strip()
-            if len(s.split()) >= 6:
-                out.append(s)
-    return out
+    return _long_sentences(chunks)
 
 
 def _top_terms(sentences: list[str], k: int = 6) -> list[str]:
@@ -308,7 +368,11 @@ def _top_terms(sentences: list[str], k: int = 6) -> list[str]:
 
     stop = {"this", "that", "with", "from", "have", "will", "when", "what", "does", "uses",
             "using", "into", "such", "than", "then", "them", "they", "their", "about",
-            "after", "also", "program", "example", "lesson"}
+            "after", "also", "program", "example", "lesson",
+            # Metadata terms must never become skill slugs/concepts.
+            "prepared", "teacher", "author", "school", "university", "college",
+            "institute", "academy", "reference", "references", "bibliography",
+            "edited", "written", "authored", "submitted"}
     words: list[str] = []
     for s in sentences:
         for w in re.sub(r"[^a-zA-Z ]", "", s).lower().split():
@@ -318,8 +382,13 @@ def _top_terms(sentences: list[str], k: int = 6) -> list[str]:
 
 
 def fallback_skills(context_chunks: list[dict], lesson_id: str, max_skills: int = 6) -> list[dict]:
-    """Deterministic grounded splitter: one skill per ~2 sentences (agent-side topic count)."""
-    sentences = _sentences(context_chunks)
+    """Deterministic grounded splitter: one skill per ~2 INSTRUCTIONAL sentences.
+
+    Incidental/metadata sentences are excluded so 'Prepared by X / School / page N'
+    never becomes a skill. If nothing instructional remains, returns a single
+    placeholder skill (insufficient context) rather than metadata skills.
+    """
+    sentences = [s for s in _sentences(context_chunks) if not _is_incidental_sentence(s)]
     if not sentences:
         return [{"skill_id": f"{lesson_id}_basics", "name": "Lesson basics",
                  "description": "Core concepts of the lesson.", "key_concepts": []}]
@@ -342,8 +411,9 @@ def fallback_skills(context_chunks: list[dict], lesson_id: str, max_skills: int 
 
 
 def fallback_explanation(skill: dict, context_chunks: list[dict]) -> str:
-    """Grounded explanation composed from the skill's retrieved sentences."""
-    sentences = _sentences(context_chunks) or _sentences([{"text": skill.get("description", "")}])
+    """Grounded explanation composed from the skill's INSTRUCTIONAL sentences."""
+    sentences = ([s for s in _sentences(context_chunks) if not _is_incidental_sentence(s)]
+                 or _sentences([{"text": skill.get("description", "")}]))
     if not sentences:
         return (f"{skill.get('name', skill.get('skill_id'))}: key lesson concept. "
                 "Review the uploaded material for details and examples.")
@@ -360,9 +430,9 @@ def fallback_explanation(skill: dict, context_chunks: list[dict]) -> str:
 
 
 def fallback_lesson_explanation(context_chunks: list[dict], course_id: str, lesson_id: str,
-                                skill_names: list[str] | None = None) -> dict:
-    """Grounded lesson overview composed from lesson sentences."""
-    sentences = _sentences(context_chunks)
+                                 skill_names: list[str] | None = None) -> dict:
+    """Grounded lesson overview composed from INSTRUCTIONAL sentences."""
+    sentences = [s for s in _sentences(context_chunks) if not _is_incidental_sentence(s)]
     if not sentences:
         return {"title": lesson_id.replace("_", " ").title(),
                 "explanation": (f"This lesson ({lesson_id}) introduces its key concepts step by step. "
@@ -382,15 +452,27 @@ def fallback_lesson_explanation(context_chunks: list[dict], course_id: str, less
 
 
 def fallback_critique(questions: list[dict], context_chunks: list[dict]) -> list[dict]:
-    """Deterministic quality gate: term-overlap grounding + answer-index sanity (pure logic)."""
+    """Deterministic quality gate: grounding + answer sanity + PEDAGOGICAL RELEVANCE.
+
+    Grounding (necessary) = term overlap with full material. Relevance (sufficient) =
+    not a metadata/trivia question AND overlap with INSTRUCTIONAL vocabulary.
+    This enforces: presence in source is necessary but NOT sufficient.
+    """
     vocab: set[str] = set()
     for c in context_chunks:
         for w in re.sub(r"[^a-zA-Z ]", "", c.get("text", "")).lower().split():
             if len(w) > 4:
                 vocab.add(w)
+    instructional_vocab: set[str] = set()
+    for c in context_chunks:
+        for s in _instructional_sentences([c]):
+            for w in re.sub(r"[^a-zA-Z ]", "", s[0]).lower().split():
+                if len(w) > 4:
+                    instructional_vocab.add(w)
     verdicts = []
     for i, q in enumerate(questions):
-        qterms = {w for w in re.sub(r"[^a-zA-Z ]", "", q.get("question", "")).lower().split()
+        qtext = q.get("question", "")
+        qterms = {w for w in re.sub(r"[^a-zA-Z ]", "", qtext).lower().split()
                   if len(w) > 4}
         overlap = len(qterms & vocab)
         grounded = overlap >= 2
@@ -398,13 +480,23 @@ def fallback_critique(questions: list[dict], context_chunks: list[dict]) -> list
         if q.get("type") == "multiple_choice":
             ca = q.get("correct_answer")
             answer_ok = isinstance(ca, int) and 0 <= ca < len(q.get("options", []))
+        # Relevance: metadata questions fail even when grounded.
+        is_metadata_q = bool(_METADATA_QUESTION_RE.search(qtext))
+        instr_overlap = len(qterms & instructional_vocab)
+        relevant = (not is_metadata_q) and instr_overlap >= 2
         issue = ""
         if not grounded:
             issue = f"shares only {overlap} significant terms with the lesson material"
+        elif not relevant:
+            if is_metadata_q:
+                issue = "tests incidental document metadata, not the learning objective"
+            else:
+                issue = (f"shares only {instr_overlap} terms with instructional content; "
+                         f"pedagogically irrelevant trivia")
         elif not answer_ok:
             issue = "correct_answer index is out of range"
         verdicts.append({"index": i, "grounded": grounded, "answer_correct": answer_ok,
-                         "issue": issue})
+                         "relevant": relevant, "issue": issue})
     return verdicts
 
 

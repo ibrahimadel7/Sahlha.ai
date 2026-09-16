@@ -31,8 +31,11 @@ def upload_document(course_id: str = Form("general"), lesson_id: str = Form("les
                     skill_id: str = Form("general"), file: UploadFile = File(...),
                     background_tasks: BackgroundTasks = None,
                     db: Session = Depends(get_db), _teacher: None = Depends(require_teacher)):
-    # file.file.read can block for large uploads; cap at 25MB already enforced in ingestion
-    data = file.file.read()
+    # Cap the in-memory read at 25MB+1 so an oversized upload is rejected BEFORE
+    # buffering unbounded bytes (ingestion re-checks the exact limit).
+    data = file.file.read(25 * 1024 * 1024 + 1)
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 25MB)")
     try:
         result = svc.upload_and_process(db, file_bytes=data, filename=file.filename or "upload.txt",
                                         course_id=course_id, lesson_id=lesson_id, skill_id=skill_id,

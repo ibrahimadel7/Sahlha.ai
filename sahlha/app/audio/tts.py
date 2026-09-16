@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import io
 import os
-import re
 import wave
 
 
@@ -145,7 +144,9 @@ def _pcm_to_wav(pcm: bytes, framerate: int = 24000, nchannels: int = 1, sampwidt
 
 def split_for_tts(text: str, max_chars: int = 900) -> list[str]:
     """Sentence-aware splitter (pure — unit tested)."""
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    from sahlha.app.rag.text import split_sentences
+
+    sentences = split_sentences(text.strip())
     chunks, current = [], ""
     for s in sentences:
         if len(s) > max_chars:

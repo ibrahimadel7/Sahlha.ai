@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from sahlha.app.rag.text import split_sentences
+
 
 def clean_text(text: str) -> str:
     lines = [ln.strip() for ln in text.splitlines()]
@@ -16,7 +18,7 @@ def clean_text(text: str) -> str:
 
 
 def _sentences(text: str) -> list[str]:
-    parts = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    parts = split_sentences(text)
     return parts or ([text] if text else [])
 
 

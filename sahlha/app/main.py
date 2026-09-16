@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from sahlha.app.api import routes_agent, routes_assessment, routes_audio, routes_catalog, routes_documents, routes_images, routes_teacher
+from sahlha.app.api import routes_agent, routes_assessment, routes_audio, routes_catalog, routes_documents, routes_images, routes_teacher, routes_workflow
 from sahlha.app.database.database import init_db
 
 
@@ -42,6 +42,7 @@ app.include_router(routes_assessment.router)
 app.include_router(routes_audio.router)
 app.include_router(routes_images.router)
 app.include_router(routes_catalog.router)
+app.include_router(routes_workflow.router)
 
 # Serve the detached testing frontend at /app (if frontend/ exists)
 try:

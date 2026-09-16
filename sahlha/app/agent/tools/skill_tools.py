@@ -45,12 +45,12 @@ def skill_media(db: Session, *, course_id: str, lesson_id: str, skill_id: str) -
 
 
 def _to_dict(s) -> dict:
-    import os as _os
-
     from sahlha.app.agent.tools import audio_tools as _audio_tools
 
-    has_audio = _os.path.exists(_audio_tools.expected_path(
-        _audio_tools.skill_audio_text(s.name or "", s.explanation or "")))
+    # Same probe as services.list_skills: either container (wav/mp3) counts,
+    # so the flag agrees no matter which TTS provider synthesized the audio.
+    has_audio = _audio_tools.has_cached_audio(
+        _audio_tools.skill_audio_text(s.name or "", s.explanation or ""))
     return {"id": s.id, "course_id": s.course_id, "lesson_id": s.lesson_id,
             "skill_id": s.skill_id, "name": s.name, "description": s.description,
             "explanation": s.explanation, "key_concepts": s.key_concepts or [],

@@ -27,8 +27,10 @@ def get_student_skill_performance(db: Session, student_id: str, *,
 
 
 def update_student_memory(db: Session, *, student_id: str, skill_id: str, correct: bool,
-                          course_id: str = "general", lesson_id: str = "lesson_1") -> dict:
+                          course_id: str = "general", lesson_id: str = "lesson_1",
+                          commit: bool = True) -> dict:
     perf = repo.upsert_skill_performance(db, student_id=student_id, skill_id=skill_id,
-                                         correct=correct, course_id=course_id, lesson_id=lesson_id)
+                                         correct=correct, course_id=course_id, lesson_id=lesson_id,
+                                         commit=commit)
     return {"skill_id": perf.skill_id, "total": perf.total_attempts,
             "correct": perf.correct_attempts, "accuracy": perf.accuracy}

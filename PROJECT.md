@@ -110,7 +110,7 @@ Sahlha.ai/
 │   │   │   ├── schemas.py             # GeneratedQuestion, QuestionList, ExtractedSkill, SkillList, SkillExplanation, LessonExplanationModel, CritiqueResult
 │   │   │   ├── llm.py                 # Groq client + 5 fallback generators + critique             sahlha/app/agent/llm.py:1
 │   │   │   └── tools/                 # Agent-only DB/vector access (app never touches DB directly)
-│   │   │       ├── rag_tools.py       # retrieve_lesson / retrieve_skill_material / retrieve_relevant_material
+│   │   │       ├── rag_tools.py       # retrieve_lesson / retrieve_relevant_material
 │   │   │       ├── skill_tools.py     # register_skill / setup_skill (+ explanation → audio+image chain)
 │   │   │       ├── explanation_tools.py # explain_lesson / explain_skill (+ audio fan-out)
 │   │   │       ├── audio_tools.py     # skill/lesson_explanation_to_audio (Groq Orpheus, hash cache)
@@ -135,6 +135,11 @@ Sahlha.ai/
 │   │   │
 │   │   ├── services/
 │   │   │   └── services.py            # Business logic: upload→ingest, extract/explain/generate, teacher approve/flow, assessment start/submit
+│   │   │
+│   │   ├── workflow/                  # LangGraph teacher content pipeline (stateful, human-in-the-loop)
+│   │   │   ├── state.py               # SahlhaWorkflowState (JSON-only) + initial_state + MAX_REGENERATIONS=3
+│   │   │   ├── nodes.py               # Thin nodes reusing SahlhaAgent/tools (DB via ContextVar, never in state)
+│   │   │   └── graph.py               # retrieve→extract→lesson→generate→review(interrupt)→apply→{END|regenerate}
 │   │   │
 │   │   ├── audio/
 │   │   │   └── tts.py                 # Groq Orpheus: split 900-char chunks → synthesize → stitch WAV
@@ -351,10 +356,40 @@ GET  /students/{id}/skill-progress?course&lesson → per-skill {completed, has_e
 GET  /audio/skill?course&lesson&skill[&voice]   → WAV 503 if no GROQ_API_KEY/terms
 GET  /audio/lesson?course&lesson[&voice]
 GET  /images/skill?course&lesson&skill          → JPEG 503 if no PEXELS_API_KEY
+POST /workflow/content/run {course,lesson,feedback,n} → LangGraph run, pauses at teacher gate (returns thread_id)
+GET  /workflow/content/state?thread_id               → snapshot (status/skills/banks/attempts/trace)
+POST /workflow/content/decide {thread_id,approve|reject,feedback} → approve=finish, reject=regenerate (max 3)
 GET  /health, GET /
 ```
 
 Routes live in `sahlha/app/api/routes_*.py` and each handler is one `svc.*` call.
+
+### 4.7b LangGraph Teacher Pipeline — `sahlha/app/workflow/`
+
+The classic endpoints above still work unchanged. The workflow package adds a **stateful**
+alternative for the teacher content pipeline — the one place LangGraph genuinely helps
+(persistent state across the human pause, branching approve/reject, bounded retry loop):
+
+```text
+retrieve → extract_skills → explain_lesson → generate_banks → teacher_review
+                                                              (interrupt: checkpointed pause)
+                                                                      ↓
+                                                               apply_decision
+                                                                 ↙        ↘
+                                                     reject (+attempt<3)  approve / exhausted
+                                                       ↓                     ↓
+                                                 generate_banks          END (approved | needs_teacher)
+```
+
+- State (`state.py`) is JSON-only: ids, counts, statuses, the teacher decision, trace.
+  DB sessions/ORM rows/chunk texts never enter checkpoints.
+- Nodes (`nodes.py`) reuse `SahlhaAgent`/tools exactly like `services/` does (DB passed via
+  `ContextVar`, same thread) — no RAG/DB/LLM logic duplicated.
+- The teacher gate uses `interrupt()` + `MemorySaver`; `decide` resumes with
+  `Command(resume={action, feedback})`. Reject regenerates only non-approved skills with
+  feedback appended (approved banks are never superseded); after 3 rejects → `needs_teacher`.
+- Deliberately outside the graph: FastAPI routing, OCR/chunk/embed/vectorstore, repo CRUD,
+  TTS/Pexels providers, deterministic assessment (`select/evaluate/record`), frontend.
 
 ### 4.8 Media Subsystems
 

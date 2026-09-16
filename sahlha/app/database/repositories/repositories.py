@@ -175,6 +175,15 @@ def get_bank(db: Session, bank_id: str) -> m.QuestionBank | None:
     return db.get(m.QuestionBank, bank_id)
 
 
+def get_banks_by_ids(db: Session, bank_ids: list[str]) -> list[m.QuestionBank]:
+    """One query for many banks (avoids per-question lookups in assessment flows)."""
+    ids = [bid for bid in dict.fromkeys(bank_ids) if bid]
+    if not ids:
+        return []
+    q = select(m.QuestionBank).where(m.QuestionBank.id.in_(ids))
+    return list(db.execute(q).scalars().all())
+
+
 def list_banks(db: Session, *, status: str | None = None, limit: int = 100) -> list[m.QuestionBank]:
     q = select(m.QuestionBank)
     if status:
@@ -193,6 +202,15 @@ def set_bank_status(db: Session, bank: m.QuestionBank, status: str, feedback: st
 
 def get_questions(db: Session, bank_id: str) -> list[m.Question]:
     q = select(m.Question).where(m.Question.question_bank_id == bank_id)
+    return list(db.execute(q).scalars().all())
+
+
+def get_questions_by_ids(db: Session, question_ids: list[str]) -> list[m.Question]:
+    """One query for many questions (submit loads the whole assessment at once)."""
+    ids = [qid for qid in dict.fromkeys(question_ids) if qid]
+    if not ids:
+        return []
+    q = select(m.Question).where(m.Question.id.in_(ids))
     return list(db.execute(q).scalars().all())
 
 
@@ -290,12 +308,15 @@ def get_assessment(db: Session, assessment_id: str) -> m.Assessment | None:
 
 
 def record_attempt(db: Session, *, student_id: str, question_id: str, assessment_id: str,
-                   answer, correct: bool) -> m.StudentAttempt:
+                   answer, correct: bool, commit: bool = True) -> m.StudentAttempt:
     att = m.StudentAttempt(student_id=student_id, question_id=question_id,
                            assessment_id=assessment_id, answer=answer, correct=correct)
     db.add(att)
-    db.commit()
-    db.refresh(att)
+    if commit:
+        db.commit()
+        db.refresh(att)
+    else:
+        db.flush()  # make the PK available; caller commits once for the whole batch
     return att
 
 
@@ -312,7 +333,8 @@ def get_failed_question_ids(db: Session, student_id: str) -> list[str]:
 
 
 def upsert_skill_performance(db: Session, *, student_id: str, skill_id: str, correct: bool,
-                             course_id: str = "general", lesson_id: str = "lesson_1") -> m.StudentSkillPerformance:
+                             course_id: str = "general", lesson_id: str = "lesson_1",
+                             commit: bool = True) -> m.StudentSkillPerformance:
     q = select(m.StudentSkillPerformance).where(
         m.StudentSkillPerformance.student_id == student_id,
         m.StudentSkillPerformance.skill_id == skill_id,
@@ -339,8 +361,11 @@ def upsert_skill_performance(db: Session, *, student_id: str, skill_id: str, cor
         perf.correct_attempts += 1
     perf.accuracy = perf.correct_attempts / perf.total_attempts if perf.total_attempts else 0.0
     perf.last_updated = _utcnow()
-    db.commit()
-    db.refresh(perf)
+    if commit:
+        db.commit()
+        db.refresh(perf)
+    else:
+        db.flush()  # caller commits once for the whole batch (no expiry cascade)
     return perf
 
 

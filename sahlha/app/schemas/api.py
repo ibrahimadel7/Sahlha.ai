@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -46,3 +48,19 @@ class FlagRequest(BaseModel):
 class CreateStudentRequest(BaseModel):
     student_id: str | None = Field(default=None, description="Optional custom ID; auto-generated if empty")
     name: str = Field(default="Student", min_length=1, max_length=256)
+
+
+class WorkflowRunRequest(BaseModel):
+    course_id: str = "general"
+    lesson_id: str = "lesson_1"
+    teacher_feedback: str = ""
+    n_questions: int = Field(default=10, ge=4, le=15)  # per-skill bank size
+    max_skills: int = Field(default=6, ge=1, le=6)
+    force: bool = False
+    include_media: bool = False  # True blocks on TTS/image generation
+
+
+class WorkflowDecideRequest(BaseModel):
+    thread_id: str = Field(min_length=1)
+    action: Literal["approve", "reject"]
+    feedback: str = ""

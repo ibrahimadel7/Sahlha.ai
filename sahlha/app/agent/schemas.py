@@ -91,6 +91,9 @@ class CritiqueVerdict(BaseModel):
     index: int = 0
     grounded: bool = True
     answer_correct: bool = True
+    # Pedagogical relevance: False for metadata/trivia questions even when grounded.
+    # Defaults True so older LLM outputs without this field keep working.
+    relevant: bool = True
     issue: str = ""
 
 

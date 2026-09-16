@@ -30,7 +30,7 @@ sahlha/
     │   ├── schemas.py             # GeneratedQuestion / QuestionList / ExtractedSkill / SkillExplanation
     │   ├── llm.py                 # Groq client + grounded fallback generators
     │   └── tools/
-    │       ├── rag_tools.py       # retrieve_lesson / retrieve_skill_material / retrieve_relevant_material
+    │       ├── rag_tools.py       # retrieve_lesson / retrieve_relevant_material
     │       ├── question_tools.py  # save_questions / get_question_bank / get_approved_questions
     │       ├── student_tools.py   # history / failed / skill performance / update memory
     │       └── assessment_tools.py# select_questions / evaluate_answer / record_attempt
@@ -108,7 +108,6 @@ Three closed loops; the LLM reasons, the app enforces:
 | Tool | Responsibility |
 |---|---|
 | `retrieve_lesson(course, lesson)` | RAG chunks for one lesson (with doc/course/lesson/skill/page/chunk metadata) |
-| `retrieve_skill_material(skill)` | RAG chunks for one skill |
 | `retrieve_relevant_material(query, filters)` | free-form semantic search with optional filters |
 | `register_skill` / `setup_skill` (skill tools) | persist a skill; attach its explanation **via the explanation tool** |
 | `explain_skill` / `explain_lesson` (explanation tools) | persist explanation text, then **call audio + image tools** (media never fails the explanation) |

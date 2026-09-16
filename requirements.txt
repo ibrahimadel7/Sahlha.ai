@@ -16,5 +16,7 @@ httpx>=0.27
 # LLM via Groq (native SDK preferred; OpenAI-compatible client works too)
 groq>=0.11
 openai>=1.30
+# Stateful teacher content pipeline (human-in-the-loop approve/reject + regeneration)
+langgraph>=0.3
 pytesseract>=0.3.10
 pdf2image>=1.17

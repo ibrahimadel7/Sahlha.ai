@@ -34,6 +34,41 @@ from sahlha.app.agent.tools import assessment_tools, question_tools, rag_tools, 
 from sahlha.app.database.repositories import repositories as repo
 
 
+def _generate_bank_draft(job: dict) -> tuple[list[dict], str, dict, list[dict]]:
+    """Worker-thread half of bank generation: LLM generation + critique (pure, no DB access).
+
+    Thread-safe: touches only the per-skill `job` dict and module-level LLM clients.
+    Returns (questions, backend, crit_info, verdicts).
+    """
+    from sahlha.app.agent.llm import critique_questions as _critique
+    from sahlha.app.agent.prompts import build_critique_prompt as _crit_prompt
+    from sahlha.app.config import settings as _s
+
+    questions, backend = generate_questions_llm(
+        job["system"], job["user"], job["chunks"], job["skill_id"],
+        job["n_questions"], job["effective_feedback"])
+    # App-side control: the bank's skill is authoritative (one bank per skill).
+    for q in questions:
+        q["skill_id"] = job["skill_id"]
+    # FEEDBACK LOOP 1 — self-critique: deterministic by default (saves ~50% tokens).
+    # LLM critique is opt-in via ENABLE_LLM_CRITIQUE=1 for high-stakes banks.
+    if _s.enable_llm_critique and len(questions) >= 4:
+        csys, cuser = _crit_prompt(context_chunks=job["chunks"], questions=questions)
+        verdicts, crit_backend = _critique(csys, cuser, questions, job["chunks"])
+    else:
+        from sahlha.app.agent.llm import fallback_critique as _fc
+
+        verdicts, crit_backend = _fc(questions, job["chunks"]), "deterministic"
+    # A verdict fails when ungrounded, wrong answer, OR pedagogically irrelevant
+    # (e.g. metadata/trivia). Missing 'relevant' defaults to True for backwards compat.
+    bad = {v["index"] for v in verdicts
+           if not (v.get("grounded", True) and v.get("answer_correct", True)
+                   and v.get("relevant", True))}
+    crit_info = {"backend": crit_backend, "dropped": sorted(bad),
+                 "issues": [v["issue"] for v in verdicts if v["issue"]]}
+    return questions, backend, crit_info, verdicts
+
+
 class SahlhaAgent:
     def __init__(self, db: Session, state: AgentState | None = None):
         self.db = db
@@ -213,11 +248,40 @@ class SahlhaAgent:
             self.extract_skills(course_id=course_id, lesson_id=lesson_id)
             # Banks don't need media: persist explanations now, audio/images fill in lazily.
             self.explain_skills(course_id=course_id, lesson_id=lesson_id, include_media=False)
+        rows = repo.list_skills(self.db, course_id=course_id, lesson_id=lesson_id)
+        # Phase 1 (main thread — owns the DB session): per-skill retrieval + prompt building.
+        jobs = [self._prepare_bank_job(course_id=course_id, lesson_id=lesson_id,
+                                       skill_id=row.skill_id, teacher_feedback=teacher_feedback,
+                                       n_questions=n_questions) for row in rows]
+        for job in jobs:
+            st.log("tool:retrieve_skill_material",
+                   {"skill_id": job["skill_id"], "num_chunks": len(job["chunks"]),
+                    "chunk_ids": [c.get("chunk_id") for c in job["chunks"]]})
+            if job["prior_flag_count"]:
+                st.log("feedback:prior_flags", {"count": job["prior_flag_count"]})
+        # Phase 2 (worker threads — pure LLM/critique calls, no DB access): fan out so
+        # N skills cost ~1 LLM round-trip instead of N sequential ones (~5s each live).
+        if jobs:
+            with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as pool:
+                drafts = list(pool.map(_generate_bank_draft, jobs))
+        else:
+            drafts = []
+        # Phase 3 (main thread): critique logging + persist in skill order (deterministic).
         banks = []
-        for row in repo.list_skills(self.db, course_id=course_id, lesson_id=lesson_id):
-            banks.append(self.generate_question_bank(
-                course_id=course_id, lesson_id=lesson_id, skill_id=row.skill_id,
-                teacher_feedback=teacher_feedback, n_questions=n_questions))
+        for job, (questions, backend, crit_info, verdicts) in zip(jobs, drafts):
+            st.course_id, st.lesson_id, st.skill_id = course_id, lesson_id, job["skill_id"]
+            st.transition(Phase.QUESTION_GENERATION)
+            st.retrieved_context = job["chunks"]
+            st.log("llm:generate_questions", {"backend": backend, "num_questions": len(questions)})
+            st.log("llm:critique_questions", crit_info)
+            questions = self._top_up_bank_questions(job, questions, verdicts)
+            saved = question_tools.save_questions(
+                self.db, course_id=course_id, lesson_id=lesson_id, skill_id=job["skill_id"],
+                questions=questions, teacher_feedback=job["effective_feedback"])
+            st.log("tool:save_questions", saved)
+            st.transition(Phase.WAITING_FOR_TEACHER)
+            banks.append({**saved, "backend": backend, "trace": st.trace,
+                          "retrieved_chunks": len(job["chunks"])})
         return {"lesson_id": lesson_id, "num_skills": len(banks), "banks": banks, "trace": st.trace}
 
     @staticmethod
@@ -227,6 +291,50 @@ class SahlhaAgent:
         return _skill_tools._to_dict(s)
 
     # ---------- QUESTION GENERATION (per skill) ----------
+    def _prepare_bank_job(self, *, course_id: str, lesson_id: str, skill_id: str,
+                          teacher_feedback: str = "", n_questions: int = 8) -> dict:
+        """Main-thread half of bank generation: retrieval + feedback + prompt (owns the DB session)."""
+        # Skill-focused retrieval: prefer chunks for this skill, back off to the lesson.
+        chunks = rag_tools.retrieve_relevant_material(self.db, f"{skill_id} {lesson_id} key concepts examples",
+                                                      top_k=4, course_id=course_id,
+                                                      lesson_id=lesson_id, skill_id=skill_id)
+        if not chunks:
+            chunks = rag_tools.retrieve_lesson(self.db, course_id, lesson_id, top_k=4)
+
+        # FEEDBACK LOOP 2 — prior teacher flags on this skill steer the new version.
+        prior_flags = repo.get_flag_reasons_for_skill(self.db, course_id=course_id,
+                                                      lesson_id=lesson_id, skill_id=skill_id)
+        effective_feedback = teacher_feedback
+        if prior_flags:
+            effective_feedback = (teacher_feedback + "\nPrior teacher flags to avoid repeating: "
+                                  + " | ".join(dict.fromkeys(prior_flags))).strip()
+
+        system, user = build_question_prompt(course_id=course_id, lesson_id=lesson_id,
+                                             skill_id=skill_id, context_chunks=chunks,
+                                             feedback=effective_feedback, n=n_questions)
+        return {"skill_id": skill_id, "chunks": chunks, "system": system, "user": user,
+                "effective_feedback": effective_feedback,
+                "prior_flag_count": len(prior_flags), "n_questions": n_questions}
+
+    def _top_up_bank_questions(self, job: dict, questions: list[dict],
+                               verdicts: list[dict]) -> list[dict]:
+        """Apply critique verdicts; top up dropped items with grounded replacements."""
+        from sahlha.app.agent.llm import fallback_questions as _fallback_q
+
+        st = self.state
+        bad = {v["index"] for v in verdicts
+               if not (v.get("grounded", True) and v.get("answer_correct", True)
+                       and v.get("relevant", True))}
+        questions = [q for i, q in enumerate(questions) if i not in bad]
+        if len(questions) < job["n_questions"]:
+            top_up = _fallback_q(job["chunks"], job["skill_id"],
+                                 job["n_questions"] - len(questions), job["effective_feedback"])
+            for q in top_up:
+                q["skill_id"] = job["skill_id"]
+            questions.extend(top_up)
+            st.log("feedback:top_up", {"added": len(top_up)})
+        return questions
+
     def generate_question_bank(self, *, course_id: str, lesson_id: str, skill_id: str,
                                teacher_feedback: str = "", n_questions: int = 8,
                                student_id: str = "", teacher_id: str = "teacher_1") -> dict:
@@ -235,67 +343,29 @@ class SahlhaAgent:
         st.student_id, st.teacher_id = student_id, teacher_id
         st.transition(Phase.QUESTION_GENERATION)
 
-        # Skill-focused retrieval: prefer chunks for this skill, back off to the lesson.
-        chunks = rag_tools.retrieve_relevant_material(self.db, f"{skill_id} {lesson_id} key concepts examples",
-                                                      top_k=4, course_id=course_id,
-                                                      lesson_id=lesson_id, skill_id=skill_id)
-        if not chunks:
-            chunks = rag_tools.retrieve_lesson(self.db, course_id, lesson_id, top_k=4)
-        st.retrieved_context = chunks
-        st.log("tool:retrieve_skill_material", {"skill_id": skill_id, "num_chunks": len(chunks),
-                                                "chunk_ids": [c.get("chunk_id") for c in chunks]})
+        job = self._prepare_bank_job(course_id=course_id, lesson_id=lesson_id, skill_id=skill_id,
+                                     teacher_feedback=teacher_feedback, n_questions=n_questions)
+        st.retrieved_context = job["chunks"]
+        st.log("tool:retrieve_skill_material", {"skill_id": skill_id, "num_chunks": len(job["chunks"]),
+                                                "chunk_ids": [c.get("chunk_id") for c in job["chunks"]]})
+        if job["prior_flag_count"]:
+            st.log("feedback:prior_flags", {"count": job["prior_flag_count"]})
 
-        # FEEDBACK LOOP 2 — prior teacher flags on this skill steer the new version.
-        prior_flags = repo.get_flag_reasons_for_skill(self.db, course_id=course_id,
-                                                      lesson_id=lesson_id, skill_id=skill_id)
-        if prior_flags:
-            teacher_feedback = (teacher_feedback + "\nPrior teacher flags to avoid repeating: "
-                                + " | ".join(dict.fromkeys(prior_flags))).strip()
-            st.log("feedback:prior_flags", {"count": len(prior_flags)})
-
-        system, user = build_question_prompt(course_id=course_id, lesson_id=lesson_id,
-                                             skill_id=skill_id, context_chunks=chunks,
-                                             feedback=teacher_feedback, n=n_questions)
-        questions, backend = generate_questions_llm(system, user, chunks, skill_id, n_questions, teacher_feedback)
+        questions, backend, crit_info, verdicts = _generate_bank_draft(job)
         st.log("llm:generate_questions", {"backend": backend, "num_questions": len(questions)})
         # App-side control: the bank's skill is authoritative (one bank per skill).
         for q in questions:
             q["skill_id"] = skill_id
-
-        # FEEDBACK LOOP 1 — self-critique: deterministic by default (saves ~50% tokens).
-        # LLM critique is opt-in via ENABLE_LLM_CRITIQUE=1 for high-stakes banks.
-        from sahlha.app.agent.llm import critique_questions as _critique
-        from sahlha.app.agent.prompts import build_critique_prompt as _crit_prompt
-        from sahlha.app.config import settings as _s
-
-        if _s.enable_llm_critique and len(questions) >= 4:
-            csys, cuser = _crit_prompt(context_chunks=chunks, questions=questions)
-            verdicts, crit_backend = _critique(csys, cuser, questions, chunks)
-        else:
-            from sahlha.app.agent.llm import fallback_critique as _fc
-
-            verdicts, crit_backend = _fc(questions, chunks), "deterministic"
-        bad = {v["index"] for v in verdicts if not (v["grounded"] and v["answer_correct"])}
-        st.log("llm:critique_questions",
-               {"backend": crit_backend, "dropped": sorted(bad),
-                "issues": [v["issue"] for v in verdicts if v["issue"]]})
-        questions = [q for i, q in enumerate(questions) if i not in bad]
-        if len(questions) < n_questions:
-            from sahlha.app.agent.llm import fallback_questions as _fallback_q
-
-            top_up = _fallback_q(chunks, skill_id, n_questions - len(questions), teacher_feedback)
-            for q in top_up:
-                q["skill_id"] = skill_id
-            questions.extend(top_up)
-            st.log("feedback:top_up", {"added": len(top_up)})
+        st.log("llm:critique_questions", crit_info)
+        questions = self._top_up_bank_questions(job, questions, verdicts)
 
         saved = question_tools.save_questions(self.db, course_id=course_id, lesson_id=lesson_id,
                                               skill_id=skill_id, questions=questions,
-                                              teacher_feedback=teacher_feedback)
+                                              teacher_feedback=job["effective_feedback"])
         st.log("tool:save_questions", saved)
         st.transition(Phase.WAITING_FOR_TEACHER)
         return {**saved, "backend": backend, "trace": st.trace,
-                "retrieved_chunks": len(chunks)}
+                "retrieved_chunks": len(job["chunks"])}
 
     # ---------- ASSESSMENT ----------
     def start_assessment(self, *, student_id: str, course_id: str | None = None,
@@ -305,30 +375,33 @@ class SahlhaAgent:
         st.transition(Phase.ASSESSMENT)
         repo.get_or_create_student(self.db, student_id)
 
-        approved = question_tools.get_approved_questions(self.db, course_id=course_id,
-                                                         lesson_id=lesson_id, skill_id=skill_id)
-        st.log("tool:get_approved_questions", {"count": len(approved)})
         history = student_tools.get_student_history(self.db, student_id)
         perf = student_tools.get_student_skill_performance(self.db, student_id)
         st.student_memory = {"history_count": len(history), "performance": perf,
                              "failed": student_tools.get_failed_questions(self.db, student_id)}
         st.log("tool:get_student_history", st.student_memory)
 
+        # select_questions loads the approved pool once (no duplicate query here).
         selected, meta = assessment_tools.select_questions(self.db, student_id=student_id,
                                                            course_id=course_id, lesson_id=lesson_id,
                                                            skill_id=skill_id)
+        st.log("tool:get_approved_questions", {"count": meta.get("pool_size", len(selected))})
         st.log("tool:select_questions", meta)
         st.current_question_ids = [q["id"] for q in selected]
         bank_id = selected[0]["bank_id"] if selected else ""
         # Multi-bank lineage: resolve dominant (course, lesson) BEFORE persisting,
-        # so the assessment row records what was actually tested.
+        # so the assessment row records what was actually tested. Banks are loaded
+        # once (not once per question per loop).
+        bank_map = {b.id: b for b in repo.get_banks_by_ids(
+            self.db, [q["bank_id"] for q in selected if q.get("bank_id")])}
+
+        def _bank_of(q: dict):
+            return bank_map.get(q.get("bank_id", ""))
+
         from collections import Counter as _Counter
 
-        _pairs = []
-        for q in selected:
-            _bank = repo.get_bank(self.db, q["bank_id"]) if q.get("bank_id") else None
-            if _bank is not None:
-                _pairs.append((_bank.course_id, _bank.lesson_id))
+        _pairs = [(b.course_id, b.lesson_id) for q in selected
+                  if (_b := _bank_of(q)) is not None for b in [_b]]
         _course, _lesson = (_Counter(_pairs).most_common(1)[0][0] if _pairs
                             else (course_id or "general", lesson_id or "lesson_1"))
         assessment = repo.create_assessment(self.db, student_id=student_id,
@@ -337,6 +410,8 @@ class SahlhaAgent:
                                             course_id=_course, lesson_id=_lesson)
         # Study-before-exercise: attach each covered skill's agent-written explanation.
         # Resolved via the question's bank (course/lesson) so the right skill row is used.
+        # One skill lookup per distinct skill (not per question), slug fallback preserved.
+        skill_cache: dict[tuple[str, str, str], object | None] = {}
         explanations: list[dict] = []
         seen_skills: set[str] = set()
         for q in selected:
@@ -344,11 +419,14 @@ class SahlhaAgent:
             if skid in seen_skills:
                 continue
             seen_skills.add(skid)
+            bank = _bank_of(q)
             row = None
-            bank = repo.get_bank(self.db, q["bank_id"]) if q.get("bank_id") else None
             if bank is not None:
-                row = repo.get_skill(self.db, course_id=bank.course_id,
-                                     lesson_id=bank.lesson_id, skill_id=skid)
+                key = (bank.course_id, bank.lesson_id, skid)
+                if key not in skill_cache:
+                    skill_cache[key] = repo.get_skill(self.db, course_id=bank.course_id,
+                                                      lesson_id=bank.lesson_id, skill_id=skid)
+                row = skill_cache[key]
             row = row or repo.get_skill_by_slug(self.db, skid)
             if row is not None:
                 explanations.append({"skill_id": row.skill_id, "name": row.name,
@@ -360,21 +438,14 @@ class SahlhaAgent:
                                      "explanation": "", "key_concepts": []})
         st.log("tool:get_skill_explanations", {"skills": [e["skill_id"] for e in explanations]})
         # Lesson overview first: most common (course, lesson) among the selected banks.
-        from collections import Counter
-
-        pairs = []
-        for q in selected:
-            bank = repo.get_bank(self.db, q["bank_id"]) if q.get("bank_id") else None
-            if bank is not None:
-                pairs.append((bank.course_id, bank.lesson_id))
         lesson_explanation: dict | None = None
-        if pairs:
-            top_course, top_lesson = Counter(pairs).most_common(1)[0][0]
+        if _pairs:
+            top_course, top_lesson = _Counter(_pairs).most_common(1)[0][0]
             row = repo.get_lesson_explanation(self.db, course_id=top_course, lesson_id=top_lesson)
             if row is not None and row.explanation:
                 lesson_explanation = self._lesson_to_dict(row)
         st.log("tool:get_lesson_explanation",
-               {"lesson": f"{top_course}/{top_lesson}" if pairs else None,
+               {"lesson": f"{top_course}/{top_lesson}" if _pairs else None,
                 "found": lesson_explanation is not None})
         # Student-facing payload must NOT include correct answers
         public = [{k: q[k] for k in ("id", "bank_id", "skill_id", "type", "question", "options", "difficulty")
@@ -394,9 +465,15 @@ class SahlhaAgent:
         if assessment.status == "submitted":
             raise ValueError(f"Assessment {assessment_id} already submitted")
         st.current_answers = answers
+        # Batch-load the assessment's questions + their banks up front: per-question
+        # lookups plus a commit per row previously caused N commits and an expiry
+        # cascade of re-SELECTs (measured: 17 commits / ~90 statements for 8 Qs).
+        q_map = {q.id: q for q in repo.get_questions_by_ids(self.db, assessment.question_ids)}
+        bank_map = {b.id: b for b in repo.get_banks_by_ids(
+            self.db, [q.question_bank_id for q in q_map.values() if q.question_bank_id])}
         results: list[dict] = []
         for qid in assessment.question_ids:
-            q = self.db.get(repo.m.Question, qid)
+            q = q_map.get(qid)
             if not q:
                 continue
             qdict = {"id": q.id, "skill_id": q.skill_id, "type": q.question_type,
@@ -404,15 +481,16 @@ class SahlhaAgent:
             res = assessment_tools.evaluate_answer(qdict, answers.get(qid))
             assessment_tools.record_attempt(self.db, student_id=assessment.student_id,
                                             question_id=qid, assessment_id=assessment_id,
-                                            answer=answers.get(qid), correct=res["correct"])
+                                            answer=answers.get(qid), correct=res["correct"],
+                                            commit=False)
             # Scoped memory: resolve (course, lesson) from the question's bank so the
             # same skill slug in two lessons never shares counters.
-            _qbank = repo.get_bank(self.db, q.question_bank_id) if q.question_bank_id else None
+            _qbank = bank_map.get(q.question_bank_id) if q.question_bank_id else None
             _cc = _qbank.course_id if _qbank else (getattr(assessment, "course_id", None) or "general")
             _ll = _qbank.lesson_id if _qbank else (getattr(assessment, "lesson_id", None) or "lesson_1")
             student_tools.update_student_memory(self.db, student_id=assessment.student_id,
                                                 skill_id=q.skill_id, correct=res["correct"],
-                                                course_id=_cc, lesson_id=_ll)
+                                                course_id=_cc, lesson_id=_ll, commit=False)
             st.log("tool:record_attempt", {"question_id": qid, "correct": res["correct"]})
             results.append(res)
         correct = sum(1 for r in results if r["correct"])

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/theme/sahlha_colors.dart';
+import 'lesson_content.dart';
 import 'sahlha_avatar.dart';
 
 bool _reduced(BuildContext context) =>
@@ -785,11 +786,7 @@ class FeedbackCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  message,
-                  style: Theme.of(context).textTheme.bodyMedium
-                      ?.copyWith(height: 1.55),
-                ),
+                LessonContent(source: message),
               ],
             ),
           ),

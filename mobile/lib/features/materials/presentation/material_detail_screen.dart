@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/api/api_exception.dart';
 import '../../../core/theme/sahlha_colors.dart';
 import '../../../core/theme/sahlha_spacing.dart';
+import '../../../core/widgets/sahlha_markdown.dart';
 import '../../../core/widgets/sahlha_widgets.dart';
 import '../../classrooms/data/classroom_repository.dart';
 import '../../teacher/data/teacher_repository.dart';
@@ -1548,13 +1549,13 @@ class _SourceBodyState extends State<_SourceBody> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Text(
-                      current.explanation.isNotEmpty
+                    SahlhaMarkdown(
+                      data: current.explanation.isNotEmpty
                           ? current.explanation
                           : current.description.isNotEmpty
                           ? current.description
                           : 'No excerpt available for this section yet.',
-                      style: text.bodySmall?.copyWith(height: 1.6),
+                      baseStyle: text.bodySmall?.copyWith(height: 1.6),
                     ),
                     const SizedBox(height: 12),
                     Container(

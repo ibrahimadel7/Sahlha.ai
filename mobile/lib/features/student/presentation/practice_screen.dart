@@ -239,7 +239,7 @@ class _PracticeScreenState extends ConsumerState<PracticeScreen> {
                                 ? (check.correct
                                       ? 'The loop runs while the condition is true — nice reading!'
                                       : 'Keep this idea in mind for the next question. You\u2019re getting closer.')
-                                : cleanStudentText(check.explanation),
+                                : check.explanation,
                           ),
                         ),
                       ),

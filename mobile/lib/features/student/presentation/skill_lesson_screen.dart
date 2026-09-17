@@ -2,6 +2,7 @@ import '../../../core/theme/sahlha_spacing.dart';
 import '../examples/presentation/adaptive_example_screen.dart';
 import 'widgets/joyful_cards.dart';
 import 'widgets/learning_playground.dart';
+import 'widgets/lesson_content.dart';
 import 'widgets/playful_background.dart';
 import 'widgets/sahlha_avatar.dart';
 
@@ -260,18 +261,12 @@ class SkillLessonScreen extends ConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Icon(Icons.arrow_right, color: SahlhaColors.teal),
-                        Expanded(
-                          child: Text(
-                            cleanStudentText(s),
-                            style: text.bodyMedium,
-                          ),
-                        ),
+                        Expanded(child: LessonContent(source: s)),
                       ],
                     ),
                   ),
                 ),
-              if (help.steps.isEmpty)
-                Text(cleanStudentText(help.body), style: text.bodyLarge),
+              if (help.steps.isEmpty) LessonContent(source: help.body),
               if (help.keyConcepts.isNotEmpty) ...[
                 const SizedBox(height: SahlhaSpacing.md),
                 Wrap(
@@ -530,10 +525,7 @@ class _LessonReadingState extends State<_LessonReading> {
                             ),
                           ),
                           const SizedBox(height: 8),
-                          Text(
-                            chunks[index],
-                            style: text.bodyLarge?.copyWith(height: 1.65),
-                          ),
+                          LessonContent(source: chunks[index]),
                           if (chunks.length > 1)
                             Padding(
                               padding: const EdgeInsets.only(top: 10),

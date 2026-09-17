@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/theme/sahlha_colors.dart';
 import '../../../materials/domain/material.dart' show GeneratedSkill;
+import '../../../student/presentation/journey_presentation.dart'
+    show cleanStudentText;
 import 'teacher_widgets.dart';
 
 /// A compact review summary with full, selectable content on expansion.
@@ -30,8 +32,10 @@ class TeacherSkillCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
-    final title = skill.name.trim().isEmpty ? skill.skillId : skill.name.trim();
-    final description = skill.description.trim();
+    final title = cleanStudentText(
+      skill.name.trim().isEmpty ? skill.skillId : skill.name.trim(),
+    );
+    final description = cleanStudentText(skill.description.trim());
     final showDescription = description.isNotEmpty && description != title;
     return Material(
       color: Colors.white,
@@ -130,7 +134,11 @@ class TeacherSkillCard extends StatelessWidget {
                   if (showDescription)
                     _section(context, 'Summary', description),
                   if (skill.explanation.trim().isNotEmpty)
-                    _section(context, 'Explanation', skill.explanation.trim()),
+                    _section(
+                      context,
+                      'Explanation',
+                      cleanStudentText(skill.explanation.trim()),
+                    ),
                   if (skill.keyConcepts.isNotEmpty) ...[
                     const SizedBox(height: 20),
                     Text(
@@ -157,7 +165,7 @@ class TeacherSkillCard extends StatelessWidget {
                             const SizedBox(width: 8),
                             Expanded(
                               child: SelectableText(
-                                concept,
+                                cleanStudentText(concept),
                                 style: text.bodyMedium?.copyWith(height: 1.6),
                               ),
                             ),
@@ -206,7 +214,7 @@ class TeacherSkillCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           SelectableText(
-            value,
+            cleanStudentText(value),
             style: text.bodyMedium?.copyWith(
               height: 1.7,
               color: SahlhaColors.ink,

@@ -5,7 +5,10 @@ import 'package:go_router/go_router.dart';
 import '../../../core/api/api_exception.dart';
 import '../../../core/theme/sahlha_colors.dart';
 import '../../../core/theme/sahlha_spacing.dart';
+import '../../../core/widgets/sahlha_markdown.dart';
 import '../../../core/widgets/sahlha_widgets.dart';
+import '../../student/presentation/journey_presentation.dart'
+    show cleanStudentText;
 import '../data/teacher_repository.dart';
 import '../domain/bank_models.dart';
 
@@ -394,7 +397,7 @@ class _QuestionCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
-              question.question,
+              cleanStudentText(question.question),
               style: text.bodyMedium?.copyWith(
                 color: Colors.white,
                 fontFamily: 'monospace',
@@ -428,7 +431,7 @@ class _QuestionCard extends StatelessWidget {
                         : SahlhaColors.muted,
                   ),
                   const SizedBox(width: SahlhaSpacing.sm),
-                  Expanded(child: Text(opts[i])),
+                  Expanded(child: Text(cleanStudentText(opts[i]))),
                 ],
               ),
             );
@@ -439,7 +442,10 @@ class _QuestionCard extends StatelessWidget {
               'Explanation',
               style: text.labelSmall?.copyWith(color: SahlhaColors.muted),
             ),
-            Text(question.explanation, style: text.bodyMedium),
+            SahlhaMarkdown(
+              data: question.explanation,
+              baseStyle: text.bodyMedium,
+            ),
           ],
         ],
       ),

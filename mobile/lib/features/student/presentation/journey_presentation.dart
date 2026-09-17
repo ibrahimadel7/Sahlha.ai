@@ -1,12 +1,32 @@
 import '../domain/skill_models.dart';
 
 /// Display-only cleanup. Identifiers and source text in API models stay intact.
+///
+/// Markdown *markers* are stripped for short one-line labels (options, chips,
+/// titles) which render with plain Text; paragraph content renders through
+/// the LessonContent widget and keeps its formatting.
 String cleanStudentText(String text) {
   return text
       .replaceAll(RegExp(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b'), '')
       .replaceAll(RegExp(r'(?<![A-Za-z0-9])[0-9a-fA-F]{8,}(?![A-Za-z0-9])'), '')
       .replaceAll(RegExp(r'\(\s*\)|\[\s*\]'), '')
+      .replaceAll('**', '')
       .replaceAll(RegExp(r'_{2,}'), ' ')
+      .replaceAll('`', '')
+      .replaceAll(RegExp(r'^#{1,6}\s+', multiLine: true), '')
+      .replaceAll(RegExp(r'^[>\s]*[-+]\s+', multiLine: true), '')
+      .replaceAll(RegExp(r'[ \t]{2,}'), ' ')
+      .trim();
+}
+
+/// Markdown-preserving cleanup for paragraph content rendered through
+/// the LessonContent widget: drops identifiers and whitespace noise but
+/// keeps `**bold**`, lists, headings and code fences intact.
+String cleanStudentMarkdown(String text) {
+  return text
+      .replaceAll(RegExp(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}\b'), '')
+      .replaceAll(RegExp(r'(?<![A-Za-z0-9])[0-9a-fA-F]{8,}(?![A-Za-z0-9])'), '')
+      .replaceAll(RegExp(r'\(\s*\)|\[\s*\]'), '')
       .replaceAll(RegExp(r'[ \t]{2,}'), ' ')
       .trim();
 }
@@ -208,8 +228,14 @@ String practiceLocation({
 ).toString();
 
 /// Preserve all educational content, revealing it in comfortably sized sections.
+///
+/// Splits on blank lines first; long paragraphs cut at sentence/word
+/// boundaries. Cuts never land inside a `**bold**`, `__underline__` or
+/// `code` span so markdown renders instead of leaking raw markers.
+///
+/// Uses [cleanStudentMarkdown] so formatting survives sectioning.
 List<String> lessonSections(String source) {
-  final text = cleanStudentText(source);
+  final text = cleanStudentMarkdown(source);
   if (text.isEmpty) return [];
   final result = <String>[];
   for (final paragraph in text.split(RegExp(r'\n\s*\n'))) {
@@ -223,10 +249,38 @@ List<String> lessonSections(String source) {
       } else {
         cut += 1;
       }
+      cut = _cutOutsideMarkup(remaining, cut);
       result.add(remaining.substring(0, cut).trim());
       remaining = remaining.substring(cut).trim();
     }
     if (remaining.isNotEmpty) result.add(remaining);
   }
   return result;
+}
+
+/// Moves [cut] forward past the closing marker when it lands inside a
+/// `**..**`, `__..__` or backtick span; falls back to cutting before the
+/// opening marker when no close is nearby.
+int _cutOutsideMarkup(String text, int cut) {
+  for (final marker in ['**', '__', '`']) {
+    final before = _markerCount(text.substring(0, cut), marker);
+    if (before.isOdd) {
+      final close = text.indexOf(marker, cut);
+      if (close != -1 && close - cut < 200) return close + marker.length;
+      final open = text.lastIndexOf(marker, cut - 1);
+      if (open > 0) return open;
+    }
+  }
+  return cut;
+}
+
+int _markerCount(String text, String marker) {
+  var count = 0;
+  var from = 0;
+  while (true) {
+    final i = text.indexOf(marker, from);
+    if (i == -1) return count;
+    count++;
+    from = i + marker.length;
+  }
 }

@@ -57,6 +57,10 @@ class LessonExplanation(Base):
     title: Mapped[str] = mapped_column(String(256), default="")
     explanation: Mapped[str] = mapped_column(Text, default="")
     key_concepts: Mapped[list] = mapped_column(JSON, default=list)
+    # Broad educational category id (see sahlha/app/lesson_categories.py),
+    # classified once per lesson from RAG context; reused as the guardrail
+    # for every skill image query of the lesson.
+    category: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -65,6 +69,8 @@ class Skill(Base):
     """A skill extracted by the agent from a lesson.
 
     Each skill gets an agent-written explanation and its own question bank(s).
+    Provenance (learning_objective + source_* refs) records the RAG evidence
+    the skill was grounded in; additive columns, never a redesign.
     """
     __tablename__ = "skills"
     __table_args__ = (UniqueConstraint("course_id", "lesson_id", "skill_id", name="uq_lesson_skill"),)
@@ -77,6 +83,9 @@ class Skill(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     explanation: Mapped[str] = mapped_column(Text, default="")  # agent-written, grounded in lesson chunks
     key_concepts: Mapped[list] = mapped_column(JSON, default=list)
+    learning_objective: Mapped[str] = mapped_column(Text, default="")
+    source_chunk_ids: Mapped[list] = mapped_column(JSON, default=list)
+    source_evidence: Mapped[list] = mapped_column(JSON, default=list)
     image_url: Mapped[str] = mapped_column(String(1024), default="")  # Pexels source page
     image_path: Mapped[str] = mapped_column(String(1024), default="")  # local cached file
     image_alt: Mapped[str] = mapped_column(String(512), default="")
@@ -114,6 +123,9 @@ class Question(Base):
     correct_answer: Mapped[int | str] = mapped_column(JSON, default=0)
     explanation: Mapped[str] = mapped_column(Text, default="")
     difficulty: Mapped[str] = mapped_column(String(32), default="medium")
+    # RAG provenance: Question -> Skill -> retrieved chunks. Additive only.
+    source_chunk_ids: Mapped[list] = mapped_column(JSON, default=list)
+    source_evidence: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
     bank: Mapped[QuestionBank] = relationship("QuestionBank", back_populates="questions")

@@ -72,7 +72,8 @@ def explain_lesson(db: Session, *, course_id: str, lesson_id: str, title: str = 
                                          key_concepts=key_concepts)
     lesson = {"id": row.id, "course_id": row.course_id, "lesson_id": row.lesson_id,
               "title": row.title, "explanation": row.explanation,
-              "key_concepts": row.key_concepts or []}
+              "key_concepts": row.key_concepts or [],
+              "category": getattr(row, "category", "") or ""}
     if not include_media:
         return {"lesson_id": lesson_id,
                 "media": {"audio": {"status": "skipped",

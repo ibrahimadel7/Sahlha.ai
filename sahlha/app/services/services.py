@@ -61,7 +61,8 @@ def get_lesson(db: Session, *, course_id: str, lesson_id: str) -> dict:
     row = repo.get_lesson_explanation(db, course_id=course_id, lesson_id=lesson_id)
     return {"lesson": ({"id": row.id, "course_id": row.course_id, "lesson_id": row.lesson_id,
                         "title": row.title, "explanation": row.explanation,
-                        "key_concepts": row.key_concepts or []} if row else None),
+                        "key_concepts": row.key_concepts or [],
+                        "category": getattr(row, "category", "") or ""} if row else None),
             "skills": list_skills(db, course_id=course_id, lesson_id=lesson_id)}
 
 
@@ -85,7 +86,11 @@ def list_skills(db: Session, *, course_id: str, lesson_id: str,
         rows = [s for s in rows if s.skill_id == skill_id]
     return [{"id": s.id, "course_id": s.course_id, "lesson_id": s.lesson_id, "skill_id": s.skill_id,
              "name": s.name, "description": s.description, "explanation": s.explanation,
-             "key_concepts": s.key_concepts or [], "has_image": bool(s.image_path),
+             "key_concepts": s.key_concepts or [],
+             "learning_objective": getattr(s, "learning_objective", "") or "",
+             "source_chunk_ids": list(getattr(s, "source_chunk_ids", None) or []),
+             "source_evidence": list(getattr(s, "source_evidence", None) or []),
+             "has_image": bool(s.image_path),
              "image_alt": s.image_alt or "", "has_audio": _skill_has_audio(s)}
             for s in rows]
 

@@ -28,7 +28,14 @@ from sahlha.app.agent.prompts import (
     build_skill_explanation_prompt,
     build_skill_extraction_prompt,
 )
-from sahlha.app.agent.schemas import LessonExplanationModel, SkillExplanation, SkillList
+from sahlha.app.agent.schemas import (
+    GeneratedQuestion,
+    GroundedQuestion,
+    GroundedSkillList,
+    LessonExplanationModel,
+    SkillExplanation,
+    SkillList,
+)
 from sahlha.app.agent.state import AgentState, Phase
 from sahlha.app.agent.tools import assessment_tools, question_tools, rag_tools, skill_tools, student_tools
 from sahlha.app.database.repositories import repositories as repo
@@ -79,9 +86,18 @@ class SahlhaAgent:
                        force: bool = False, n_skills: int | None = None) -> dict:
         """Split a lesson into skills (one per topic; the AGENT decides how many).
 
-        Idempotent unless force=True. `max_skills` is only an upper-bound safety cap.
+        Mandatory RAG flow (no parallel raw-text path):
+          retrieve_lesson -> generate (LLM or deterministic fallback, SAME chunks)
+          -> attach evidence (SAME chunks, no re-retrieval)
+          -> schema validation -> grounding validation -> persist accepted.
+
+        Empty retrieval is an explicit failure state (no fabrication). Total
+        grounding failure triggers ONE bounded fallback attempt, never a loop.
+        Idempotent unless force=True. `max_skills` is only an upper-bound cap.
         `n_skills` is a deprecated alias kept for backwards compatibility.
         """
+        from sahlha.app.agent import grounding as _g
+
         if n_skills is not None:
             max_skills = n_skills
         st = self.state
@@ -95,8 +111,42 @@ class SahlhaAgent:
                 st.log("skills:existing", {"count": len(skills)})
                 return {"skills": skills, "backend": "existing", "trace": st.trace}
 
+        # Single retrieval for this workflow; reused by generation + validation.
         chunks = rag_tools.retrieve_lesson(self.db, course_id, lesson_id, top_k=5)
-        st.log("tool:retrieve_lesson", {"num_chunks": len(chunks)})
+        st.log("tool:retrieve_lesson", {
+            "num_chunks": len(chunks),
+            "chunk_ids": [c.get("chunk_id") for c in chunks],
+        })
+        if not chunks:
+            st.log("validation:empty_retrieval", {
+                "course_id": course_id, "lesson_id": lesson_id,
+                "error": "no RAG chunks for lesson; refusing to fabricate skills",
+            })
+            st.skills = []
+            return {"skills": [], "backend": "empty-retrieval", "trace": st.trace,
+                    "status": "failed",
+                    "error": f"No material found for {course_id}/{lesson_id}. Upload a document first.",
+                    "dropped": [], "retrieved_chunks": 0}
+
+        # Lesson classification (once per lesson, reused by every skill image):
+        # deterministic, from THE SAME retrieved chunks — no extra retrieval,
+        # no LLM call. The category id is persisted on the lesson row so the
+        # image tool receives it instead of rediscovering it per skill.
+        from sahlha.app.lesson_categories import classify_lesson as _classify
+        lesson_category = _classify(
+            lesson_id=lesson_id, course_id=course_id,
+            text=" ".join(c.get("text", "") for c in chunks)[:6000])
+        try:
+            repo.upsert_lesson_explanation(self.db, course_id=course_id, lesson_id=lesson_id,
+                                           category=lesson_category["category_id"])
+        except Exception as exc:
+            # Classification must never break extraction; the image tool falls
+            # back to on-the-fly classification. Logged, never silent.
+            st.log("lesson:classify_persist_failed", {"error": str(exc)[:200]})
+        st.log("lesson:classify", {"category": lesson_category["category_id"],
+                                   "scores": {k: v for k, v in
+                                              lesson_category["scores"].items() if v}})
+
         system, user = build_skill_extraction_prompt(course_id=course_id, lesson_id=lesson_id,
                                                      context_chunks=chunks, max_skills=max_skills)
         try:
@@ -106,16 +156,60 @@ class SahlhaAgent:
         except RuntimeError:
             raw, backend = fallback_skills(chunks, lesson_id, max_skills), "fallback(no-api-key)"
         except Exception as exc:
+            # Schema failure (malformed LLM JSON) also fails soft to the grounded
+            # fallback once here; per-item grounding below handles the rest.
+            st.log("validation:schema_failed", {"stage": "skill_raw", "error": str(exc)[:500]})
             raw, backend = fallback_skills(chunks, lesson_id, max_skills), f"fallback(llm-error: {exc})"
         st.log("llm:extract_skills", {"backend": backend, "count": len(raw)})
 
+        accepted, rejected = self._ground_skills(raw, chunks, course_id, lesson_id)
+        # Bounded retry: if the LLM path grounded nothing, try the deterministic
+        # fallback once (same chunks, no extra retrieval). No further loops.
+        if not accepted and not backend.startswith("fallback"):
+            st.log("validation:skill_grounding_empty", {
+                "backend": backend, "dropped": rejected,
+                "retry": "fallback-once",
+            })
+            fb_raw = fallback_skills(chunks, lesson_id, max_skills)
+            accepted, rejected = self._ground_skills(fb_raw, chunks, course_id, lesson_id)
+            if accepted:
+                backend = f"{backend}+fallback-retry"
+        if rejected:
+            st.log("validation:skill_grounding", {
+                "accepted": len(accepted), "dropped": rejected,
+            })
+
         skills = []
-        for s in raw[: max(1, max_skills)]:
-            # Skill tool persists; explanation/media come later via setup_skill.
+        for s in accepted[: max(1, max_skills)]:
+            # Skill tool persists provenance; explanation/media come later.
             skills.append(skill_tools.register_skill(self.db, course_id=course_id,
                                                      lesson_id=lesson_id, skill_data=s))
         st.skills = skills
-        return {"skills": skills, "backend": backend, "trace": st.trace}
+        out: dict = {"skills": skills, "backend": backend, "trace": st.trace,
+                     "dropped": rejected, "retrieved_chunks": len(chunks)}
+        if not skills:
+            out["status"] = "failed"
+            out["error"] = "No grounded skills could be extracted from the retrieved material."
+        return out
+
+    @staticmethod
+    def _ground_skills(raw: list[dict], chunks: list[dict],
+                       course_id: str, lesson_id: str) -> tuple[list[dict], list[dict]]:
+        """Enrich raw skills with evidence (same chunks) then schema+grounding validate."""
+        from sahlha.app.agent import grounding as _g
+
+        enriched = _g.attach_skill_evidence(raw or [], chunks or [])
+        # Strict schema first: missing/wrong-typed grounding fields fail here.
+        strict: list[dict] = []
+        rejected: list[dict] = []
+        for s in enriched:
+            try:
+                strict.append(GroundedSkillList(skills=[s]).skills[0].model_dump())
+            except Exception as exc:
+                rejected.append({"skill_id": (s or {}).get("skill_id", "?"),
+                                 "reasons": [f"schema: {exc}"]})
+        accepted, ground_rejected = _g.partition_skills(strict, chunks or [], course_id, lesson_id)
+        return accepted, rejected + ground_rejected
 
     def explain_skills(self, *, course_id: str, lesson_id: str, force: bool = False,
                        include_media: bool = True) -> dict:
@@ -238,7 +332,8 @@ class SahlhaAgent:
     def _lesson_to_dict(row) -> dict:
         return {"id": row.id, "course_id": row.course_id, "lesson_id": row.lesson_id,
                 "title": row.title, "explanation": row.explanation,
-                "key_concepts": row.key_concepts or []}
+                "key_concepts": row.key_concepts or [],
+                "category": getattr(row, "category", "") or ""}
 
     def generate_lesson_banks(self, *, course_id: str, lesson_id: str,
                               teacher_feedback: str = "", n_questions: int = 6) -> dict:
@@ -266,7 +361,8 @@ class SahlhaAgent:
                 drafts = list(pool.map(_generate_bank_draft, jobs))
         else:
             drafts = []
-        # Phase 3 (main thread): critique logging + persist in skill order (deterministic).
+        # Phase 3 (main thread): critique + schema + grounding (same chunks,
+        # no re-retrieval) + persist in skill order (deterministic).
         banks = []
         for job, (questions, backend, crit_info, verdicts) in zip(jobs, drafts):
             st.course_id, st.lesson_id, st.skill_id = course_id, lesson_id, job["skill_id"]
@@ -274,14 +370,25 @@ class SahlhaAgent:
             st.retrieved_context = job["chunks"]
             st.log("llm:generate_questions", {"backend": backend, "num_questions": len(questions)})
             st.log("llm:critique_questions", crit_info)
-            questions = self._top_up_bank_questions(job, questions, verdicts)
+            if not job["chunks"]:
+                st.log("validation:empty_retrieval", {
+                    "skill_id": job["skill_id"],
+                    "error": "no RAG chunks; refusing to fabricate questions",
+                })
+                backend = "empty-retrieval"
+                ground_info: dict = {"dropped_critique": [], "dropped_schema": [],
+                                     "dropped_grounding": [], "topped_up": 0}
+                questions = []
+            else:
+                questions, ground_info = self._finalize_bank_questions(job, questions, verdicts)
             saved = question_tools.save_questions(
                 self.db, course_id=course_id, lesson_id=lesson_id, skill_id=job["skill_id"],
                 questions=questions, teacher_feedback=job["effective_feedback"])
             st.log("tool:save_questions", saved)
             st.transition(Phase.WAITING_FOR_TEACHER)
             banks.append({**saved, "backend": backend, "trace": st.trace,
-                          "retrieved_chunks": len(job["chunks"])})
+                          "retrieved_chunks": len(job["chunks"]),
+                          "grounding": ground_info})
         return {"lesson_id": lesson_id, "num_skills": len(banks), "banks": banks, "trace": st.trace}
 
     @staticmethod
@@ -318,22 +425,143 @@ class SahlhaAgent:
 
     def _top_up_bank_questions(self, job: dict, questions: list[dict],
                                verdicts: list[dict]) -> list[dict]:
-        """Apply critique verdicts; top up dropped items with grounded replacements."""
+        """Apply critique verdicts; top up dropped items with grounded replacements.
+
+        Thin wrapper kept for backwards compat: full pipeline (critique +
+        schema + RAG grounding, one bounded top-up reusing job['chunks']) lives
+        in _finalize_bank_questions. No extra retrieval happens here.
+        """
+        questions, _info = self._finalize_bank_questions(job, questions, verdicts)
+        return questions
+
+    def _finalize_bank_questions(
+        self, job: dict, questions: list[dict], verdicts: list[dict]
+    ) -> tuple[list[dict], dict]:
+        """Critique filter -> schema filter -> RAG grounding -> ONE top-up.
+
+        All steps reuse ``job['chunks']`` (the single retrieval for this bank).
+        Returns (accepted_questions, info{dropped_critique, dropped_schema,
+        dropped_grounding, topped_up}).
+        """
+        from sahlha.app.agent import grounding as _g
         from sahlha.app.agent.llm import fallback_questions as _fallback_q
 
         st = self.state
+        course_id = st.course_id
+        lesson_id = st.lesson_id
+        skill_id = job["skill_id"]
+        chunks = job["chunks"] or []
+
         bad = {v["index"] for v in verdicts
                if not (v.get("grounded", True) and v.get("answer_correct", True)
                        and v.get("relevant", True))}
-        questions = [q for i, q in enumerate(questions) if i not in bad]
-        if len(questions) < job["n_questions"]:
-            top_up = _fallback_q(job["chunks"], job["skill_id"],
-                                 job["n_questions"] - len(questions), job["effective_feedback"])
+        kept = [q for i, q in enumerate(questions or []) if i not in bad]
+        dropped_critique = sorted(bad)
+
+        # Stage A: raw schema per-item (malformed LLM output is dropped, not saved).
+        raw_valid: list[dict] = []
+        dropped_schema: list[dict] = []
+        for i, q in enumerate(kept):
+            try:
+                dump = GeneratedQuestion(**(q or {})).model_dump()
+            except Exception as exc:
+                dropped_schema.append({"index": i, "reasons": [f"schema: {exc}"]})
+                continue
+            # Per-item duplicate-options check (list-level QuestionList also
+            # enforces this at save time; here we isolate the bad item).
+            if dump.get("type") == "multiple_choice":
+                lowered = [str(o or "").strip().lower() for o in dump.get("options", [])]
+                if len(set(lowered)) != len(lowered):
+                    dropped_schema.append({"index": i, "reasons": ["schema: duplicate options"]})
+                    continue
+            raw_valid.append(dump)
+        # Bank-level exact duplicates: keep first, drop rest (observable).
+        # Rotation variants (same stem, different option order) are allowed.
+        def _qkey(q: dict) -> tuple:
+            norm = " ".join(str(q.get("question", "")).strip().lower().split())
+            opts = tuple(str(o or "").strip().lower() for o in (q.get("options", []) or []))
+            return (norm, opts, str(q.get("correct_answer")))
+
+        _seen: set[tuple] = set()
+        _deduped: list[dict] = []
+        for q in raw_valid:
+            key = _qkey(q)
+            if key in _seen:
+                dropped_schema.append({"skill_id": q.get("skill_id", "?"),
+                                       "reasons": ["schema: duplicate question in bank"]})
+                continue
+            _seen.add(key)
+            _deduped.append(q)
+        raw_valid = _deduped
+
+        # Stage B: deterministic provenance + strict schema + RAG grounding.
+        enriched = _g.attach_question_evidence(raw_valid, chunks)
+        strict_valid: list[dict] = []
+        for q in enriched:
+            try:
+                strict_valid.append(GroundedQuestion(**q).model_dump())
+            except Exception as exc:
+                dropped_schema.append({"skill_id": q.get("skill_id", "?"),
+                                       "reasons": [f"grounded-schema: {exc}"]})
+        valid_skills = {skill_id}
+        accepted, dropped_grounding = _g.partition_questions(
+            strict_valid, chunks, valid_skills, course_id, lesson_id)
+
+        # Bounded regeneration: ONE deterministic top-up with the SAME chunks.
+        topped_up = 0
+        if len(accepted) < job["n_questions"] and chunks:
+            need = job["n_questions"] - len(accepted)
+            top_up = _fallback_q(chunks, skill_id, need, job["effective_feedback"])
             for q in top_up:
-                q["skill_id"] = job["skill_id"]
-            questions.extend(top_up)
-            st.log("feedback:top_up", {"added": len(top_up)})
-        return questions
+                q["skill_id"] = skill_id
+            # Validate top-ups through the same pipeline (no further top-ups).
+            tu_raw: list[dict] = []
+            for q in top_up:
+                try:
+                    tu_raw.append(GeneratedQuestion(**q).model_dump())
+                except Exception as exc:
+                    dropped_schema.append({"skill_id": skill_id,
+                                           "reasons": [f"topup-schema: {exc}"]})
+            tu_enriched = _g.attach_question_evidence(tu_raw, chunks)
+            tu_strict: list[dict] = []
+            for q in tu_enriched:
+                try:
+                    tu_strict.append(GroundedQuestion(**q).model_dump())
+                except Exception as exc:
+                    dropped_schema.append({"skill_id": skill_id,
+                                           "reasons": [f"topup-grounded-schema: {exc}"]})
+            tu_accepted, tu_rejected = _g.partition_questions(
+                tu_strict, chunks, valid_skills, course_id, lesson_id)
+            dropped_grounding.extend(tu_rejected)
+            # Final bank-level exact-dedup across original + top-up.
+            def _qkey2(q: dict) -> tuple:
+                norm = " ".join(str(q.get("question", "")).strip().lower().split())
+                opts = tuple(str(o or "").strip().lower() for o in (q.get("options", []) or []))
+                return (norm, opts, str(q.get("correct_answer")))
+
+            _have = {_qkey2(q) for q in accepted}
+            _before = len(accepted)
+            for q in tu_accepted[:need]:
+                key = _qkey2(q)
+                if key in _have:
+                    dropped_schema.append({"skill_id": skill_id,
+                                           "reasons": ["schema: duplicate question in bank (top-up)"]})
+                    continue
+                _have.add(key)
+                accepted.append(q)
+            topped_up = len(accepted) - _before
+            if topped_up:
+                st.log("feedback:top_up", {"added": topped_up})
+
+        info = {"dropped_critique": dropped_critique,
+                "dropped_schema": dropped_schema,
+                "dropped_grounding": dropped_grounding,
+                "topped_up": topped_up}
+        if dropped_schema:
+            st.log("validation:question_schema", {"dropped": dropped_schema})
+        if dropped_grounding:
+            st.log("validation:question_grounding", {"dropped": dropped_grounding})
+        return accepted, info
 
     def generate_question_bank(self, *, course_id: str, lesson_id: str, skill_id: str,
                                teacher_feedback: str = "", n_questions: int = 8,
@@ -351,21 +579,41 @@ class SahlhaAgent:
         if job["prior_flag_count"]:
             st.log("feedback:prior_flags", {"count": job["prior_flag_count"]})
 
+        if not job["chunks"]:
+            st.log("validation:empty_retrieval", {
+                "skill_id": skill_id,
+                "error": "no RAG chunks for skill/lesson; refusing to fabricate questions",
+            })
+            saved = question_tools.save_questions(
+                self.db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id,
+                questions=[], teacher_feedback=job["effective_feedback"])
+            st.log("tool:save_questions", saved)
+            st.transition(Phase.WAITING_FOR_TEACHER)
+            return {**saved, "backend": "empty-retrieval", "trace": st.trace,
+                    "retrieved_chunks": 0, "status": "failed",
+                    "error": "No retrieved material for this skill; bank is empty.",
+                    "grounding": {"dropped_critique": [], "dropped_schema": [],
+                                  "dropped_grounding": [], "topped_up": 0}}
+
         questions, backend, crit_info, verdicts = _generate_bank_draft(job)
         st.log("llm:generate_questions", {"backend": backend, "num_questions": len(questions)})
         # App-side control: the bank's skill is authoritative (one bank per skill).
         for q in questions:
             q["skill_id"] = skill_id
         st.log("llm:critique_questions", crit_info)
-        questions = self._top_up_bank_questions(job, questions, verdicts)
+        questions, ground_info = self._finalize_bank_questions(job, questions, verdicts)
 
         saved = question_tools.save_questions(self.db, course_id=course_id, lesson_id=lesson_id,
                                               skill_id=skill_id, questions=questions,
                                               teacher_feedback=job["effective_feedback"])
         st.log("tool:save_questions", saved)
         st.transition(Phase.WAITING_FOR_TEACHER)
-        return {**saved, "backend": backend, "trace": st.trace,
-                "retrieved_chunks": len(job["chunks"])}
+        out: dict = {**saved, "backend": backend, "trace": st.trace,
+                     "retrieved_chunks": len(job["chunks"]), "grounding": ground_info}
+        if not questions:
+            out["status"] = "failed"
+            out["error"] = "All drafted questions failed grounding validation; bank is empty."
+        return out
 
     # ---------- ASSESSMENT ----------
     def start_assessment(self, *, student_id: str, course_id: str | None = None,
@@ -385,6 +633,12 @@ class SahlhaAgent:
         selected, meta = assessment_tools.select_questions(self.db, student_id=student_id,
                                                            course_id=course_id, lesson_id=lesson_id,
                                                            skill_id=skill_id)
+        # Strict boundary: selection must be duplicate-free with valid ids.
+        _ids = [q.get("id", "") for q in selected]
+        if len(set(_ids)) != len(_ids) or any(not i for i in _ids):
+            raise ValueError("Invalid question selection: duplicate or missing question ids")
+        if any(not q.get("bank_id") or not q.get("skill_id") for q in selected):
+            raise ValueError("Invalid question selection: missing bank_id/skill_id")
         st.log("tool:get_approved_questions", {"count": meta.get("pool_size", len(selected))})
         st.log("tool:select_questions", meta)
         st.current_question_ids = [q["id"] for q in selected]
@@ -457,6 +711,8 @@ class SahlhaAgent:
 
     # ---------- EVALUATION ----------
     def submit_assessment(self, *, assessment_id: str, answers: dict[str, object]) -> dict:
+        from sahlha.app.agent.schemas import SubmittedAnswers
+
         st = self.state
         st.transition(Phase.EVALUATION)
         assessment = repo.get_assessment(self.db, assessment_id)
@@ -464,7 +720,19 @@ class SahlhaAgent:
             raise ValueError(f"Assessment {assessment_id} not found")
         if assessment.status == "submitted":
             raise ValueError(f"Assessment {assessment_id} already submitted")
-        st.current_answers = answers
+        # Strict boundary: malformed submissions fail fast (observable 400/404),
+        # never silently accepted. Missing answers are allowed (scored incorrect);
+        # unknown question ids are rejected.
+        try:
+            clean_answers = SubmittedAnswers(answers=dict(answers or {})).answers
+        except Exception as exc:
+            raise ValueError(f"Invalid answer submission: {exc}") from exc
+        expected = set(assessment.question_ids or [])
+        unknown = sorted(set(clean_answers) - expected)
+        if unknown:
+            raise ValueError(f"Unknown question ids in submission: {unknown}")
+        st.current_answers = clean_answers
+        answers = clean_answers
         # Batch-load the assessment's questions + their banks up front: per-question
         # lookups plus a commit per row previously caused N commits and an expiry
         # cascade of re-SELECTs (measured: 17 commits / ~90 statements for 8 Qs).

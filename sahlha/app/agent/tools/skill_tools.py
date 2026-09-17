@@ -13,12 +13,15 @@ from sahlha.app.database.repositories import repositories as repo
 
 
 def register_skill(db: Session, *, course_id: str, lesson_id: str, skill_data: dict) -> dict:
-    """Persist one extracted skill (no explanation yet)."""
+    """Persist one extracted skill (no explanation yet), including RAG provenance."""
     row = repo.upsert_skill(db, course_id=course_id, lesson_id=lesson_id,
                             skill_id=skill_data["skill_id"],
                             name=skill_data.get("name", skill_data["skill_id"]),
                             description=skill_data.get("description", ""),
-                            key_concepts=skill_data.get("key_concepts", []))
+                            key_concepts=skill_data.get("key_concepts", []),
+                            learning_objective=skill_data.get("learning_objective", ""),
+                            source_chunk_ids=skill_data.get("source_chunk_ids", []),
+                            source_evidence=skill_data.get("source_evidence", []))
     return _to_dict(row)
 
 
@@ -54,6 +57,9 @@ def _to_dict(s) -> dict:
     return {"id": s.id, "course_id": s.course_id, "lesson_id": s.lesson_id,
             "skill_id": s.skill_id, "name": s.name, "description": s.description,
             "explanation": s.explanation, "key_concepts": s.key_concepts or [],
+            "learning_objective": getattr(s, "learning_objective", "") or "",
+            "source_chunk_ids": list(getattr(s, "source_chunk_ids", None) or []),
+            "source_evidence": list(getattr(s, "source_evidence", None) or []),
             "has_image": bool(getattr(s, "image_path", "")),
             "image_alt": getattr(s, "image_alt", "") or "",
             "has_audio": has_audio}

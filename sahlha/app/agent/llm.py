@@ -280,6 +280,8 @@ def fallback_questions(context_chunks: list[dict], skill_id: str, n: int = 8,
     """
     from sahlha.app.rag.text import split_sentences as _split_sentences
 
+    if not context_chunks:
+        return []  # empty retrieval -> refuse to fabricate questions
     usable: list[tuple[str, object]] = []
     for c in context_chunks:
         for s in _split_sentences(c.get("text", "")):
@@ -289,6 +291,8 @@ def fallback_questions(context_chunks: list[dict], skill_id: str, n: int = 8,
     if not sentences:
         if usable:
             return []  # material exists but is all metadata -> refuse, don't launder it
+        # Non-empty but too short to split: keep one generic placeholder so the
+        # offline loop never breaks. Empty retrieval already returned [] above.
         sentences = [("The lesson introduces key concepts and examples.", skill_id)]
 
     wants_hard = "hard" in feedback.lower() or "difficult" in feedback.lower() or "practical" in feedback.lower()
@@ -385,13 +389,14 @@ def fallback_skills(context_chunks: list[dict], lesson_id: str, max_skills: int 
     """Deterministic grounded splitter: one skill per ~2 INSTRUCTIONAL sentences.
 
     Incidental/metadata sentences are excluded so 'Prepared by X / School / page N'
-    never becomes a skill. If nothing instructional remains, returns a single
-    placeholder skill (insufficient context) rather than metadata skills.
+    never becomes a skill. Empty retrieval or all-incidental material returns []
+    (insufficient context) instead of fabricating generic/metadata skills.
     """
+    if not context_chunks:
+        return []
     sentences = [s for s in _sentences(context_chunks) if not _is_incidental_sentence(s)]
     if not sentences:
-        return [{"skill_id": f"{lesson_id}_basics", "name": "Lesson basics",
-                 "description": "Core concepts of the lesson.", "key_concepts": []}]
+        return []
     k = max(1, min(max_skills, (len(sentences) + 1) // 2))
     size = max(1, (len(sentences) + k - 1) // k)
     out: list[dict] = []

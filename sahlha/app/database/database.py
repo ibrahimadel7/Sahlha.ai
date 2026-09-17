@@ -39,8 +39,12 @@ def _ensure_columns() -> None:
     from sqlalchemy import inspect, text
 
     wanted: dict[str, list[tuple[str, str]]] = {
+        "lesson_explanations": [("category", "VARCHAR(64)")],
         "skills": [("image_url", "VARCHAR(1024)"), ("image_path", "VARCHAR(1024)"),
-                   ("image_alt", "VARCHAR(512)")],
+                   ("image_alt", "VARCHAR(512)"),
+                   ("learning_objective", "TEXT"), ("source_chunk_ids", "JSON"),
+                   ("source_evidence", "JSON")],
+        "questions": [("source_chunk_ids", "JSON"), ("source_evidence", "JSON")],
         "assessments": [("course_id", "VARCHAR(128)"), ("lesson_id", "VARCHAR(128)")],
         "student_skill_performance": [("course_id", "VARCHAR(128)"), ("lesson_id", "VARCHAR(128)")],
         "students": [("email", "VARCHAR(320)"), ("role", "VARCHAR(32)")],

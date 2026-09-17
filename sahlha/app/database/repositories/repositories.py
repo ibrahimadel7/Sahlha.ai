@@ -59,8 +59,9 @@ def get_chunks(db: Session, *, course_id: str | None = None, lesson_id: str | No
 
 # ---- Lesson explanations ----
 def upsert_lesson_explanation(db: Session, *, course_id: str, lesson_id: str,
-                              title: str = "", explanation: str = "",
-                              key_concepts: list | None = None) -> m.LessonExplanation:
+                               title: str = "", explanation: str = "",
+                               key_concepts: list | None = None,
+                               category: str | None = None) -> m.LessonExplanation:
     q = select(m.LessonExplanation).where(m.LessonExplanation.course_id == course_id,
                                           m.LessonExplanation.lesson_id == lesson_id)
     row = db.execute(q).scalars().first()
@@ -74,6 +75,8 @@ def upsert_lesson_explanation(db: Session, *, course_id: str, lesson_id: str,
         row.explanation = explanation
     if key_concepts is not None:
         row.key_concepts = key_concepts
+    if category is not None:
+        row.category = category
     row.updated_at = _utcnow()
     db.commit()
     db.refresh(row)
@@ -88,7 +91,10 @@ def get_lesson_explanation(db: Session, *, course_id: str, lesson_id: str) -> m.
 
 # ---- Skills ----
 def upsert_skill(db: Session, *, course_id: str, lesson_id: str, skill_id: str,
-                 name: str = "", description: str = "", key_concepts: list | None = None) -> m.Skill:
+                 name: str = "", description: str = "", key_concepts: list | None = None,
+                 learning_objective: str = "",
+                 source_chunk_ids: list | None = None,
+                 source_evidence: list | None = None) -> m.Skill:
     q = select(m.Skill).where(m.Skill.course_id == course_id, m.Skill.lesson_id == lesson_id,
                               m.Skill.skill_id == skill_id)
     skill = db.execute(q).scalars().first()
@@ -102,6 +108,12 @@ def upsert_skill(db: Session, *, course_id: str, lesson_id: str, skill_id: str,
         skill.description = description
     if key_concepts is not None:
         skill.key_concepts = key_concepts
+    if learning_objective:
+        skill.learning_objective = learning_objective
+    if source_chunk_ids is not None:
+        skill.source_chunk_ids = list(source_chunk_ids)
+    if source_evidence is not None:
+        skill.source_evidence = list(source_evidence)
     skill.updated_at = _utcnow()
     db.commit()
     db.refresh(skill)

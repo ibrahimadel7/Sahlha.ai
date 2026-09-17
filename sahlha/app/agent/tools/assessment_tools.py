@@ -106,9 +106,16 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
 
 
 def evaluate_answer(question: dict, student_answer) -> dict:
-    """Structured per-question evaluation."""
-    correct_answer = question["correct_answer"]
-    if question.get("type") == "multiple_choice":
+    """Structured per-question evaluation (strict boundary, validated output)."""
+    from sahlha.app.agent.schemas import EvaluationRecord
+
+    q = question or {}
+    if not q.get("id"):
+        raise ValueError("evaluate_answer requires question['id']")
+    if "correct_answer" not in q:
+        raise ValueError(f"question {q.get('id')!r} has no correct_answer")
+    correct_answer = q["correct_answer"]
+    if q.get("type") == "multiple_choice":
         try:
             correct = int(student_answer) == int(correct_answer)
         except (TypeError, ValueError):
@@ -116,8 +123,11 @@ def evaluate_answer(question: dict, student_answer) -> dict:
     else:
         norm = lambda v: str(v or "").strip().lower()
         correct = norm(student_answer) == norm(correct_answer) or norm(correct_answer) in norm(student_answer)
-    return {"question_id": question["id"], "correct": correct, "student_answer": student_answer,
-            "correct_answer": correct_answer, "skill_id": question.get("skill_id", "general")}
+    rec = EvaluationRecord(question_id=str(q["id"]), correct=bool(correct),
+                           student_answer=student_answer,
+                           correct_answer=correct_answer,
+                           skill_id=str(q.get("skill_id", "general") or "general"))
+    return rec.model_dump()
 
 
 def record_attempt(db: Session, *, student_id: str, question_id: str, assessment_id: str,

@@ -14,9 +14,17 @@ def test_build_image_query_from_skill_context():
     q = pexels.build_image_query({"name": "Elif Branches (cond_lesson)",
                                   "skill_id": "cond_lesson__elif",
                                   "key_concepts": ["elif keyword", "conditions", "branching"]})
+    # Category-aware builder: skill stays subject, "(lesson)" suffix stripped.
     assert "Elif" in q and "elif keyword" in q
     assert "(" not in q  # "(cond_lesson)" suffix stripped
     assert pexels.build_image_query({"name": "", "skill_id": "x", "key_concepts": []}) == "x"
+    # Code disambiguation comes from lesson category, not bare keywords:
+    qc = pexels.build_image_query({"name": "Elif Branches",
+                                   "skill_id": "c",
+                                   "key_concepts": ["elif keyword"],
+                                   "lesson_category": "computer_science",
+                                   "lesson_title": "Python programming"})
+    assert "programming" in qc.lower()
 
 
 def _seed_skill(db_session, **kw):

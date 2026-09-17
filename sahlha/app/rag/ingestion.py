@@ -57,7 +57,11 @@ def _extract_lesson_id(filename: str, text: str, provided: str) -> str:
 
 def ingest_upload(db: Session, *, file_bytes: bytes, filename: str,
                   course_id: str = "general", lesson_id: str = "lesson_1",
-                  skill_id: str = "general", eager: bool = True) -> dict:
+                  skill_id: str = "general", eager: bool = True,
+                  defer_index: bool | None = None) -> dict:
+    # Compat: pr-1 callers pass defer_index (True = background). Ours uses eager.
+    if defer_index is not None:
+        eager = not defer_index
     if len(file_bytes) > 25 * 1024 * 1024:
         raise ValueError("File too large (max 25MB)")
     # Extract text first so we can auto-derive lesson_id from PDF content when user left it default
@@ -67,9 +71,11 @@ def ingest_upload(db: Session, *, file_bytes: bytes, filename: str,
     # Auto-extract lesson_id from PDF if user didn't provide a meaningful one
     lesson_id = _extract_lesson_id(filename, extracted.text, lesson_id)
     course_id = (course_id or "general").strip() or "general"
-    # Slugify course_id as well (keep user value if explicit)
+    # Slugify course_id as well (keep user value if explicit), but preserve
+    # platform scopes "class:<id>" / "child:<id>" (mapping.py) verbatim.
     import re as _re2
-    course_id = _re2.sub(r"[^a-z0-9]+", "_", course_id.lower()).strip("_") or "general"
+    if not (course_id.startswith("class:") or course_id.startswith("child:")):
+        course_id = _re2.sub(r"[^a-z0-9]+", "_", course_id.lower()).strip("_") or "general"
     doc = repo.create_document(db, filename=os.path.basename(filename or "upload.bin")[:255],
                                course_id=course_id,
                                lesson_id=lesson_id, skill_id=skill_id)
@@ -94,6 +100,8 @@ def ingest_upload(db: Session, *, file_bytes: bytes, filename: str,
     return {
         "document_id": doc.id,
         "filename": doc.filename,
+        "original_filename": filename,
+        "title": doc.filename,
         "course_id": course_id,
         "lesson_id": lesson_id,
         "skill_id": skill_id,
@@ -103,4 +111,6 @@ def ingest_upload(db: Session, *, file_bytes: bytes, filename: str,
         "char_count": len(extracted.text),
         "chunk_count": len(chunks),
         "text_preview": extracted.text[:500],
+        "quality": getattr(extracted, "quality", {}),
+        "warnings": getattr(extracted, "warnings", []),
     }

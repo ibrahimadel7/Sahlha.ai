@@ -82,7 +82,7 @@ class SahlhaAgent:
         self.state = state or AgentState()
 
     # ---------- SKILL EXTRACTION + EXPLANATION ----------
-    def extract_skills(self, *, course_id: str, lesson_id: str, max_skills: int = 6,
+    def extract_skills(self, *, course_id: str, lesson_id: str, max_skills: int | None = 6,
                        force: bool = False, n_skills: int | None = None) -> dict:
         """Split a lesson into skills (one per topic; the AGENT decides how many).
 
@@ -95,11 +95,14 @@ class SahlhaAgent:
         grounding failure triggers ONE bounded fallback attempt, never a loop.
         Idempotent unless force=True. `max_skills` is only an upper-bound cap.
         `n_skills` is a deprecated alias kept for backwards compatibility.
+        `max_skills=None` uses the default safety cap (6).
         """
         from sahlha.app.agent import grounding as _g
 
         if n_skills is not None:
             max_skills = n_skills
+        if max_skills is None:
+            max_skills = 6
         st = self.state
         st.course_id, st.lesson_id = course_id, lesson_id
         st.transition(Phase.SKILL_EXTRACTION)
@@ -617,10 +620,13 @@ class SahlhaAgent:
 
     # ---------- ASSESSMENT ----------
     def start_assessment(self, *, student_id: str, course_id: str | None = None,
-                         lesson_id: str | None = None, skill_id: str | None = None) -> dict:
+                         lesson_id: str | None = None, skill_id: str | None = None,
+                         learned_only: bool = False) -> dict:
         st = self.state
         st.student_id = student_id
         st.transition(Phase.ASSESSMENT)
+        if learned_only:
+            st.log("assessment:learned_only", {"note": "compat flag accepted; selection still covers approved banks"})
         repo.get_or_create_student(self.db, student_id)
 
         history = student_tools.get_student_history(self.db, student_id)

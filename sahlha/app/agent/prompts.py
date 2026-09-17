@@ -78,16 +78,58 @@ If the material supports fewer than {n} meaningful questions, return fewer — n
 
 
 def build_question_prompt(*, course_id: str, lesson_id: str, skill_id: str,
-                          context_chunks: list[dict], feedback: str = "", n: int = 8) -> tuple[str, str]:
+                          context_chunks: list[dict], feedback: str = "", n: int = 8,
+                          objective: str = "", key_concepts: list | None = None,
+                          misconceptions: list | None = None) -> tuple[str, str]:
     from sahlha.app.config import settings
 
     # Token-optimized: 6000 chars ≈ 1500 tokens vs 3000 before; 4 chunks of 800 = 3200 chars fits comfortably
     context = "\n\n".join(f"[chunk {c.get('chunk_id', i)} | skill={c.get('skill_id')}] {c.get('text', '')}"
                           for i, c in enumerate(context_chunks)) or "(no context retrieved)"
+    extra = ""
+    if objective:
+        extra += f"\nLearning objective: {objective[:500]}"
+    if key_concepts:
+        extra += f"\nKey concepts: {', '.join(str(c)[:80] for c in key_concepts[:6])}"
+    if misconceptions:
+        extra += f"\nMisconceptions to target: {', '.join(str(m)[:80] for m in misconceptions[:4])}"
+    fb = ((feedback or "(none)") + extra)[:800]
     user = QUESTION_USER_TEMPLATE.format(course_id=course_id, lesson_id=lesson_id,
-                                         skill_id=skill_id, feedback=(feedback or "(none)")[:500],
+                                         skill_id=skill_id, feedback=fb,
                                          context=context[:settings.llm_skill_context_chars], n=n)
     return QUESTION_SYSTEM, user
+
+
+def evidence_context(chunks, budget: int = 16000) -> str:
+    """Platform compat: pack complete ranked chunks; never cut mid-character."""
+    parts, size = [], 0
+    for i, chunk in enumerate(chunks or []):
+        part = f"[chunk {chunk.get('chunk_id', i)} | section={chunk.get('section_id', '')} | page={chunk.get('page', '')}] {chunk.get('text', '')}"
+        if size + len(part) + 2 <= budget:
+            parts.append(part)
+            size += len(part) + 2
+        else:
+            break
+    return "\n\n".join(parts) or "(no context retrieved)"
+
+
+SKILL_CONSOLIDATION_SYSTEM = """You are the Sahlha curriculum consolidator. Merge section-level candidate topics into a WHOLE-LESSON skill set. Prefer fewer, meaningful teaching units over many fragments."""
+
+SKILL_CONSOLIDATION_USER_TEMPLATE = """Course: {course_id}\nLesson: {lesson_id}\nMaximum skills (safety cap only): {max_skills}\n\nCandidates:\n{candidates}"""
+
+SEMANTIC_VERIFIER_SYSTEM = """You verify a conceptual MCQ against its cited curriculum evidence. Do NOT rewrite the question. Reply with grounded/answer_correct/relevant booleans and a short issue."""
+
+
+def build_skill_consolidation_prompt(*, course_id: str, lesson_id: str,
+                                     content_map: dict | None = None,
+                                     candidates: list[dict] | None = None,
+                                     max_skills: int = 6) -> tuple[str, str]:
+    """Compact whole-lesson input for consolidation (platform compat)."""
+    import json as _json
+    user = SKILL_CONSOLIDATION_USER_TEMPLATE.format(
+        course_id=course_id, lesson_id=lesson_id, max_skills=max_skills,
+        candidates=_json.dumps(candidates or [], ensure_ascii=False)[:8000])
+    return SKILL_CONSOLIDATION_SYSTEM, user
 
 
 SKILL_EXTRACTION_SYSTEM = """You are Sahlha. Split a lesson into skills — one per genuine TEACHING UNIT, not one per sentence or chunk.

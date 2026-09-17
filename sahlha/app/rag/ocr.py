@@ -14,6 +14,28 @@ class ExtractedDocument:
     num_pages: int
     is_scanned: bool  # True when native text extraction yielded ~nothing (image-based)
     method: str       # e.g. "pypdf" | "docx" | "txt" | "ocr:tesseract" | "ocr:unavailable"
+    # Platform compat (structured layer): defaults so callers can always read them.
+    blocks: list = None  # type: ignore
+    warnings: list = None  # type: ignore
+    quality: dict = None  # type: ignore
+
+    def __post_init__(self):
+        if self.blocks is None:
+            self.blocks = []
+        if self.warnings is None:
+            self.warnings = []
+        if self.quality is None:
+            self.quality = {}
+
+
+def discover_tesseract() -> str | None:
+    """Platform compat alias."""
+    return _tesseract_cmd()
+
+
+def discover_poppler() -> str | None:
+    """Platform compat alias."""
+    return _poppler_path()
 
 
 def _extract_pdf_native(data: bytes) -> tuple[str, int]:

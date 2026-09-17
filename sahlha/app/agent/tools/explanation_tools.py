@@ -98,3 +98,32 @@ def ensure_lesson_media(db: Session, *, course_id: str, lesson_id: str) -> dict:
                           "voice": res.get("voice", "")}}
     except Exception as exc:
         return {"audio": {"status": "skipped", "reason": str(exc)[:500]}}
+
+
+def serialize_lesson(row) -> dict:
+    """Platform compat: lesson dict with media flags (works with ours schema)."""
+    try:
+        from sahlha.app.agent.tools import image_tools as _img
+        from sahlha.app.agent.tools import audio_tools as _aud
+        has_img = bool(getattr(row, "image_path", "") or "")
+        try:
+            if hasattr(_img, "valid_image_file"):
+                has_img = bool(_img.valid_image_file(getattr(row, "image_path", "") or ""))
+        except Exception:
+            pass
+        has_aud = False
+        try:
+            if hasattr(_aud, "valid_audio_file"):
+                has_aud = bool(_aud.valid_audio_file(getattr(row, "audio_path", "") or ""))
+        except Exception:
+            pass
+    except Exception:
+        has_img = bool(getattr(row, "image_path", "") or "")
+        has_aud = False
+    return {"id": getattr(row, "id", ""), "course_id": getattr(row, "course_id", ""),
+            "lesson_id": getattr(row, "lesson_id", ""), "title": getattr(row, "title", "") or "",
+            "explanation": getattr(row, "explanation", "") or "",
+            "key_concepts": list(getattr(row, "key_concepts", None) or []),
+            "category": getattr(row, "category", "") or "",
+            "has_image": has_img, "image_alt": getattr(row, "image_alt", "") or "",
+            "has_audio": has_aud}

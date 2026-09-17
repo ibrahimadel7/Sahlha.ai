@@ -11,6 +11,15 @@ from sqlalchemy.orm import sessionmaker
 
 os.environ.setdefault("OPENAI_API_KEY", "")
 
+# Never load real credentials or mutate the user's database during tests.
+_test_root = tempfile.TemporaryDirectory(prefix="sahlha-suite-", ignore_cleanup_errors=True)
+for _key in ("GROQ_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PEXELS_API_KEY"):
+    os.environ[_key] = ""
+os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(_test_root.name, "lifespan.db")
+os.environ["DENSE_EMBEDDINGS_ENABLED"] = "false"
+os.environ["EMBEDDING_WARMUP"] = "false"
+os.environ["LEGACY_DEV_API_ENABLED"] = "true"
+
 from sahlha.app.database.database import Base, get_db  # noqa: E402
 
 
@@ -59,6 +68,7 @@ def client(db_session):
     from sahlha.app.main import app
 
     def _override():
+        db_session.expire_all()
         try:
             yield db_session
         finally:
@@ -76,3 +86,21 @@ SAMPLE_TEXT = (
     "Only the first true branch executes. An optional else runs when nothing matches. "
     "Example: if score >= 90 grade A elif score >= 80 grade B else grade C."
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_providers_and_files(monkeypatch, tmp_path):
+    from sahlha.app.config import settings
+    from sahlha.app.rag import embeddings
+    for name in ("groq_api_key", "openai_api_key", "openrouter_api_key", "pexels_api_key"):
+        monkeypatch.setattr(settings, name, "")
+    for name in ("audio_dir", "image_dir", "upload_dir"):
+        monkeypatch.setattr(settings, name, str(tmp_path / name))
+    monkeypatch.setattr(settings, "vectorizer_path", str(tmp_path / "tfidf.pkl"))
+    monkeypatch.setattr(settings, "vector_cache_path", str(tmp_path / "vectors.npz"))
+    monkeypatch.setattr(embeddings, "_embeddings", None)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    from sahlha.app.database.database import engine
+    engine.dispose()

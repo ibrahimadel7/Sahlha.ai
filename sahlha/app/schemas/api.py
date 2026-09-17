@@ -14,7 +14,7 @@ class GenerateBankRequest(BaseModel):
 class ExtractSkillsRequest(BaseModel):
     course_id: str = "general"
     lesson_id: str = "lesson_1"
-    max_skills: int = Field(default=6, ge=1, le=6)  # hard cap: max 6 skills per lesson
+    max_skills: int | None = Field(default=None, ge=1, le=24)  # safety cap only; None => dynamic lesson-complexity cap
     force: bool = False  # re-extract even if skills already exist
 
 

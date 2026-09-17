@@ -26,7 +26,7 @@ def generate_bank(db: Session, *, course_id: str, lesson_id: str, skill_id: str,
 
 
 def extract_skills(db: Session, *, course_id: str, lesson_id: str,
-                   n_skills: int | None = None, max_skills: int = 6, force: bool = False,
+                   n_skills: int | None = None, max_skills: int | None = 6, force: bool = False,
                    include_media: bool = False) -> dict:
     """Agent splits the lesson into skills AND writes an explanation per skill.
 
@@ -36,6 +36,7 @@ def extract_skills(db: Session, *, course_id: str, lesson_id: str,
     immediately and media generates lazily on demand via /audio + /images (both UIs
     already fetch media per skill when the student opens it). Pass
     include_media=True to block on media generation (used by media tests).
+    `max_skills=None` uses the default safety cap (6).
     """
     agent = SahlhaAgent(db, AgentState())
     out = agent.extract_skills(course_id=course_id, lesson_id=lesson_id,
@@ -84,6 +85,25 @@ def list_skills(db: Session, *, course_id: str, lesson_id: str,
     rows = repo.list_skills(db, course_id=course_id, lesson_id=lesson_id)
     if skill_id:
         rows = [s for s in rows if s.skill_id == skill_id]
+    # Legacy contract preserves provenance (grounding work). Platform routes use
+    # their own serialize_skill via study_bundle; keep both working.
+    try:
+        from sahlha.app.agent.tools.skill_tools import serialize_skill as _ser
+        _has_ser = True
+    except Exception:
+        _has_ser = False
+    if _has_ser:
+        try:
+            out = [_ser(s) for s in rows]
+            # Ensure legacy provenance fields are present even if serializer omits them.
+            for d, s in zip(out, rows):
+                d.setdefault("learning_objective", getattr(s, "learning_objective", "") or "")
+                d.setdefault("source_chunk_ids", list(getattr(s, "source_chunk_ids", None) or []))
+                d.setdefault("source_evidence", list(getattr(s, "source_evidence", None) or []))
+                d.setdefault("has_audio", _skill_has_audio(s))
+            return out
+        except Exception:
+            pass
     return [{"id": s.id, "course_id": s.course_id, "lesson_id": s.lesson_id, "skill_id": s.skill_id,
              "name": s.name, "description": s.description, "explanation": s.explanation,
              "key_concepts": s.key_concepts or [],
@@ -121,14 +141,20 @@ def reject_bank(db: Session, bank_id: str, feedback: str = "") -> dict:
 
 def start_assessment(db: Session, *, student_id: str, student_name: str = "Student",
                      course_id: str | None = None, lesson_id: str | None = None,
-                     skill_id: str | None = None) -> dict:
+                     skill_id: str | None = None, learned_only: bool = False) -> dict:
     sid = (student_id or "").strip()
     if not sid:
         raise ValueError("student_id is required")
     repo.get_or_create_student(db, sid, (student_name or "Student").strip() or "Student")
     agent = SahlhaAgent(db, AgentState())
-    return agent.start_assessment(student_id=sid, course_id=course_id,
-                                  lesson_id=lesson_id, skill_id=skill_id)
+    try:
+        return agent.start_assessment(student_id=sid, course_id=course_id,
+                                      lesson_id=lesson_id, skill_id=skill_id,
+                                      learned_only=learned_only)
+    except TypeError:
+        # Older agent without learned_only compat — ignore filter.
+        return agent.start_assessment(student_id=sid, course_id=course_id,
+                                      lesson_id=lesson_id, skill_id=skill_id)
 
 
 def submit_assessment(db: Session, *, assessment_id: str, answers: dict) -> dict:
@@ -347,15 +373,26 @@ def skill_progress(db: Session, *, student_id: str, course_id: str, lesson_id: s
     if not sid:
         raise ValueError("student_id is required")
     student = repo.get_or_create_student(db, sid, (student_name or "Student").strip() or "Student")
-    approved = repo.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id)
+    # Readiness uses the latest active approved bank per skill (platform) with
+    # fallback to all approved (legacy); attempt mapping keeps full history
+    # so old progress is preserved.
+    try:
+        latest = repo.get_latest_approved_questions(db, course_id=course_id, lesson_id=lesson_id)
+        if not latest:
+            latest = repo.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id)
+    except Exception:
+        latest = repo.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id)
+    try:
+        history = repo.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id)
+    except Exception:
+        history = latest
     by_skill: dict[str, list] = {}
-    for q in approved:
+    for q in latest:
         by_skill.setdefault(q.skill_id, []).append(q)
     # Map the student's attempts onto skills via question -> bank -> skill.
     q_to_skill: dict[str, str] = {}
-    for skill_id, questions in by_skill.items():
-        for q in questions:
-            q_to_skill[q.id] = skill_id
+    for q in history:
+        q_to_skill[q.id] = q.skill_id
     per_skill_attempts: dict[str, list] = {}
     for a in repo.get_attempts(db, sid, limit=10000):
         skid = q_to_skill.get(a.question_id)

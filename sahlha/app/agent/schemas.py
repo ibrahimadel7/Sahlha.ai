@@ -7,9 +7,13 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class GeneratedQuestion(BaseModel):
+    evidence_chunk_ids: list[str] = Field(default_factory=list)
+    learning_objective: str = ""
+    tested_concept: str = ""
+    verification: dict = Field(default_factory=dict)
     skill_id: str = "general"
     type: Literal["multiple_choice", "short_answer"] = "multiple_choice"
-    question: str
+    question: str = Field(min_length=1)
     options: list[str] = Field(default_factory=list)
     correct_answer: int | str = 0
     explanation: str = ""
@@ -37,6 +41,10 @@ class GeneratedQuestion(BaseModel):
 
     def to_record(self) -> dict:
         return {
+            "evidence_chunk_ids": self.evidence_chunk_ids,
+            "learning_objective": self.learning_objective,
+            "tested_concept": self.tested_concept,
+            "verification": self.verification,
             "skill_id": self.skill_id,
             "question_type": self.type,
             "question_text": self.question,
@@ -64,7 +72,7 @@ class QuestionList(BaseModel):
             if q.type == "multiple_choice":
                 if len(q.options) != 4:
                     raise ValueError(f"MCQ must have exactly 4 options, got {len(q.options)}: {q.question[:60]}")
-                if not isinstance(q.correct_answer, int) or not (0 <= q.correct_answer <= 3):
+                if isinstance(q.correct_answer, bool) or not isinstance(q.correct_answer, int) or not (0 <= q.correct_answer <= 3):
                     raise ValueError(f"correct_answer must be 0-3 for MCQ: {q.question[:60]}")
                 stripped = [str(o or "").strip() for o in q.options]
                 if any(not o for o in stripped):
@@ -82,6 +90,12 @@ class QuestionList(BaseModel):
 
 
 class ExtractedSkill(BaseModel):
+    learning_objective: str = ""
+    prerequisites: list[str] = Field(default_factory=list)
+    misconceptions: list[str] = Field(default_factory=list)
+    difficulty: Literal["easy", "medium", "hard"] = "medium"
+    source_section_ids: list[str] = Field(default_factory=list)
+    evidence_chunk_ids: list[str] = Field(default_factory=list)
     skill_id: str
     name: str = ""
     description: str = ""

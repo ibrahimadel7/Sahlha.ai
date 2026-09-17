@@ -132,6 +132,19 @@ def is_broken_wav(data: bytes) -> bool:
     return False
 
 
+def valid_wav(data: bytes) -> bool:
+    """Platform compat: True when bytes are a playable non-broken WAV."""
+    try:
+        return _is_wav(data) and not is_broken_wav(data)
+    except Exception:
+        return False
+
+
+def retryable_provider_error(exc: Exception) -> bool:
+    """Platform compat alias."""
+    return _is_retryable_tts_error(exc)
+
+
 def _pcm_to_wav(pcm: bytes, framerate: int = 24000, nchannels: int = 1, sampwidth: int = 2) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:

@@ -1,199 +1,181 @@
-# Sahlha AI — Learning-Loop MVP
+# Sahlha — Same curriculum. Different path to mastery.
 
-First functional prototype proving the **Sahlha learning loop end-to-end**:
-upload → OCR → RAG → **agent splits lesson into skills (one per topic — the agent decides
-how many), writes a lesson overview and an explanation per skill** →
-**one 10-question bank per skill** → teacher approves each bank →
-student studies, then is assessed (**4 questions picked from EACH bank**, or one
-skill's 4 when a `skill_id` is given — **skill = explanation + exercise**) →
-attempts stored → memory updated → next assessment adapts.
+Sahlha is an **adaptive learning application** for every learner — including
+students who benefit from additional educational support (e.g. dyslexia, ADHD,
+autism). Sahlha is **not** a medical or diagnostic product and never diagnoses
+anything; it adapts *how* a learner reaches the objective, never *what* they
+are expected to learn.
 
-> LLM provider: **Groq primary → OpenRouter backup → deterministic fallback** (`GROQ_API_KEY` + `GROQ_MODEL`, default `llama-3.3-70b-versatile`; backup `OPENROUTER_API_KEY` + `OPENROUTER_MODEL` default `openai/gpt-4o-mini` via `https://openrouter.ai/api/v1`). Without any key the agent uses a **grounded deterministic fallback generator** so the whole loop still works offline.
-> TTS provider: **Groq Orpheus → OpenRouter TTS → non-fatal skip** (`canopylabs/orpheus-v1-english` voice `troy`; backup `OPENROUTER_TTS_MODEL` default `openai/gpt-4o-mini-tts` voice `alloy` via `POST /api/v1/audio/speech`). See `.env.example`.
+> Core product principle: **same curriculum, different path to mastery.**
 
-## 1. Final project structure
+## 1. Architecture
 
 ```text
-sahlha/
-└── app/
-    ├── main.py                    # FastAPI entrypoint (thin routers only)
-    ├── config.py                  # settings (Groq keys, chunking, top-k, n=4)
-    ├── api/
-    │   ├── routes_documents.py    # POST /documents/upload, POST /documents/{id}/process
-    │   ├── routes_agent.py        # POST /agent/generate-question-bank
-    │   ├── routes_teacher.py      # GET pending, GET bank, POST approve/reject
-    │   └── routes_assessment.py   # POST start/submit, GET student performance
-    ├── agent/
-    │   ├── agent.py               # SahlhaAgent state-machine runtime (ONE agent)
-    │   ├── state.py               # AgentState (typed, serializable) + Phase enum
-    │   ├── prompts.py             # LLM prompts: questions + skill extraction + explanations
-    │   ├── schemas.py             # GeneratedQuestion / QuestionList / ExtractedSkill / SkillExplanation
-    │   ├── llm.py                 # Groq client + grounded fallback generators
-    │   └── tools/
-    │       ├── rag_tools.py       # retrieve_lesson / retrieve_relevant_material
-    │       ├── question_tools.py  # save_questions / get_question_bank / get_approved_questions
-    │       ├── student_tools.py   # history / failed / skill performance / update memory
-    │       └── assessment_tools.py# select_questions / evaluate_answer / record_attempt
-    ├── rag/
-    │   ├── ingestion.py           # bytes → extract → chunk → persist → reindex
-    │   ├── ocr.py                 # extract_document_text() interface (text vs scanned)
-    │   ├── chunking.py            # overlapping char chunker + cleaner
-    │   ├── embeddings.py          # TF-IDF embedding model (swappable)
-    │   ├── vectorstore.py         # cosine search abstraction (swappable for FAISS/Chroma)
-    │   └── retriever.py           # filtered semantic retrieval
-    ├── database/
-    │   ├── database.py            # engine/session, init_db (app owns transactions)
-    │   ├── models.py              # Document, DocumentChunk, QuestionBank, Question,
-    │                              # Student, Assessment, StudentAttempt, StudentSkillPerformance
-    │   └── repositories/          # ONLY layer (besides services) touching the ORM
-    ├── schemas/api.py             # FastAPI request models
-    └── services/services.py       # business logic (routes stay thin)
-frontend/index.html                # testing frontend (Teacher / Student / Debug tabs, served at /app)
-tests/                             # test_rag, test_questions, test_assessment, test_api_loop
-data/                              # sqlite db, uploads, vectorizer (gitignored)
+Flutter mobile app (mobile/)              Python / FastAPI backend (sahlha/)
+─────────────────────────────             ─────────────────────────────────
+ALL user-facing UI:                       Auth + RBAC, users, classrooms,
+onboarding, role auth,                    enrollment, parent links, materials,
+student home / path / lesson /            document ownership, OCR/RAG,
+practice / feedback / progress,           Sahlha AI agent, skills,
+teacher dashboard / classroom /           explanations, question banks,
+upload / review / analytics,              approval, assessments, grades,
+parent home / child / materials           mastery, weak-skill memory,
+                                          learning profiles, analytics
 ```
 
-## 2. Agent architecture
+- **Flutter owns**: UI, navigation, forms, state, loading/empty/error states,
+  role presentation, API communication, secure token storage.
+- **FastAPI owns**: everything else — the database, RBAC, the AI/RAG agent,
+  answer evaluation (server-side only), grades, mastery, adaptation.
+- `streamlit_app.py` remains only as a **developer/AI debug tool**, not the
+  product.
 
-One `SahlhaAgent` (`sahlha/app/agent/agent.py`) — an explicit **state machine** over
-`AgentState`, not a free-form while-loop:
+### Preserved AI / RAG engine (unchanged architecture)
 
-```text
-SKILL_EXTRACTION → SKILL_EXPLANATION → QUESTION_GENERATION (per skill)
-→ (teacher boundary) → WAITING_FOR_TEACHER
-→ ASSESSMENT → EVALUATION → ADAPTATION
-```
+Material upload → document processing / OCR → chunking → RAG → lesson
+understanding → skill extraction → lesson + skill explanations → question-bank
+generation → **teacher approval boundary** → assessment → student-aware question
+selection (failed-retry → weak skills → unseen → difficulty balance) → answer
+evaluation → attempt recording → skill performance → weak-skill memory →
+adaptive future practice.
 
-- `extract_skills()`: `retrieve_lesson()` → Groq returns skills JSON (validated via
-  `SkillList`) → persisted in `skills` (idempotent unless `force=True`). The agent decides
-  the number of skills (one per lesson topic); `max_skills` is only a safety cap.
-- `explain_skills()`: per skill, skill-focused retrieval → Groq writes a grounded
-  student-facing explanation → **skill tool → explanation tool → audio + image tools**
-  (one call yields explanation + picture + speech; media recorded under `media`, never
-  fatal). Stored on the skill row.
-- `explain_lesson()`: one grounded overview (title + explanation + key concepts) for the
-  whole lesson → stored in `lesson_explanations` (idempotent; runs inside skill extraction too).
-  Same chain for the lesson audio (explanation tool → audio tool).
+Key preserved pieces:
 
-## 2b. Feedback loops (agent architecture)
+- `sahlha/app/agent/agent.py` — one `SahlhaAgent` state machine
+  (`SKILL_EXTRACTION → … → WAITING_FOR_TEACHER → ASSESSMENT → … → ADAPTATION`)
+- `sahlha/app/agent/tools/*` — the agent only touches infra through tools
+- `sahlha/app/agent/llm.py` — Groq structured generation + **grounded
+  deterministic fallback** (full loop works offline without an API key)
+- `sahlha/app/rag/*` — ingestion, OCR interface, chunking, TF-IDF
+  embeddings (swappable), cosine vector store, filtered retriever
+- Question banks stay **append-only versions** (`pending_review → approved /
+  rejected`); regenerating creates a new version, never overwrites history
+- Correct answers **never leave the server** before submission; students get
+  stripped payloads, teachers get full review payloads
 
-Three closed loops; the LLM reasons, the app enforces:
+### Platform extensions (new)
 
-1. **Generation self-critique** — every draft bank passes `critique_questions`
-   (Groq verdicts, or a deterministic term-overlap gate offline): ungrounded or
-   mis-answered drafts are dropped and topped up with grounded replacements. Logged in trace.
-2. **Teacher flags** — `POST /teacher/questions/{id}/flag` marks one bad question with a
-   reason. Flagged questions are **excluded from all future selections**, and their reasons
-   are **auto-appended to the next generation's feedback** for that skill (no retyping).
-   `GET /teacher/flags` lists them.
-3. **Mastery review** — each submit returns `skills_needing_review` (<50% in that
-   assessment); `skill-progress` exposes persistent `needs_review` per skill. Students
-   re-study flagged skills; teachers see where explanations/banks are failing.
-- `generate_lesson_banks()`: one `generate_question_bank()` per skill (10 questions each) — skill-focused
-  retrieval → Groq generates **structured JSON** → `QuestionList` validation →
-  `save_questions()` → phase `WAITING_FOR_TEACHER`. The bank's `skill_id` is enforced
-  app-side on every question row.
-- `start_assessment()`: approved questions + student history → memory-aware
-  `select_questions()` (**exactly 4 from EACH approved bank**, so every skill is covered;
-  failed-retry → weak skills → unseen → difficulty balance runs inside each bank)
-  → `Assessment` row created. The response also carries
-  `lesson_explanation` (whole-lesson overview) plus `skill_explanations` — so the student
-  **studies the lesson, then the skills, before the exercise**. Correct answers never leave the server.
-- `submit_assessment()`: per-question `evaluate_answer()` → `record_attempt()` →
-  `update_student_memory()` → phase `ADAPTATION`.
-- Every phase transition and tool call is appended to `state.trace` (shown in the Debug tab).
+- **IDs**: official classroom material → `course_id = "class:{classroom_id}"`,
+  `lesson_id = material.id`; supplementary child material →
+  `course_id = "child:{student_id}"`; `student_id` = the student's `User.id`.
+  All mapping lives in `sahlha/app/services/mapping.py`.
+- **Mastery** (`sahlha/app/services/mastery.py`, thresholds in settings):
+  `not_started → needs_practice (<0.6) → developing (≥0.6) → mastered
+  (≥0.8 after ≥4 attempts)`.
+- **Student Skill Performance** is now scoped by
+  `(student_id, course_id, lesson_id, skill_id)` so identical skill slugs in
+  different lessons never collide. Memory updates in the agent submit path
+  resolve scope from each question's bank.
+- **Per-question check**: `POST /student/assessments/{id}/check` evaluates one
+  answer immediately, **locks the attempt**, and updates memory; `submit`
+  reuses locked attempts (no double counting) and finalizes the grade.
+- **Learning Profile**: short support-preference onboarding (one question at a
+  time) + deterministic behavior adaptation (`hint_used`, `retry`,
+  `struggled`, `improved`, …). Support language only.
+- **Help Me**: one entry point → Make it simpler / Show an example / Read
+  aloud (+ Break into steps / Show visually / Explain this word), ordered by
+  the student's profile.
 
-## 3. Tool list & responsibilities
+## 2. Roles
 
-| Tool | Responsibility |
+| Role | Capabilities |
 |---|---|
-| `retrieve_lesson(course, lesson)` | RAG chunks for one lesson (with doc/course/lesson/skill/page/chunk metadata) |
-| `retrieve_relevant_material(query, filters)` | free-form semantic search with optional filters |
-| `register_skill` / `setup_skill` (skill tools) | persist a skill; attach its explanation **via the explanation tool** |
-| `explain_skill` / `explain_lesson` (explanation tools) | persist explanation text, then **call audio + image tools** (media never fails the explanation) |
-| `skill_explanation_to_audio` / `lesson_explanation_to_audio` | Groq Orpheus speech, cached by content hash |
-| `fetch_skill_image` | Pexels picture from skill context (name + key concepts), cached on disk |
-| `save_questions(...)` | **validate** LLM JSON (Pydantic) then persist new `pending_review` version |
-| `get_question_bank(bank_id)` | full bank + questions (teacher review) |
-| `get_approved_questions(filters)` | only `approved` banks' questions (assessment pool) |
-| `get_student_history(student)` | past attempts (capped, no full-history prompt dumps) |
-| `get_failed_questions(student)` | question IDs answered incorrectly |
-| `get_student_skill_performance(student)` | per-skill accuracy rows |
-| `update_student_memory(...)` | upsert skill counters after each attempt |
-| `select_questions(...)` | deterministic: failed-retry → weak skills (<0.6) → unseen → difficulty balance; **exactly 4** |
-| `evaluate_answer(question, answer)` | structured `{question_id, correct, student_answer, correct_answer, skill_id}` |
-| `record_attempt(...)` | one `StudentAttempt` row per answer (never just a score) |
+| **Teacher** | Register/login, create classrooms + join codes, enroll students, upload official materials, run OCR/RAG, extract skills, review/edit skills, generate question banks, review **every** question (edit / remove / regenerate one / regenerate bank / approve / reject), monitor grades, mastery (Mastered / Developing / Needs Practice / Not Started), students needing support, class skill performance |
+| **Student** | Register/login, join via code, onboarding profile, learning path, one skill at a time, adapted explanations, Help Me, Read Aloud (when TTS available), practice, assessments with immediate feedback, grades, progress |
+| **Parent** | Register/login, link children via **parent link code** (no IDs), child progress/grades/activity, supplementary material upload (private, never touches official curriculum/grades) |
+| **Sahlha AI Agent** | System intelligence layer embedded in the structured flow (never a generic chatbot screen) |
 
-The agent **never** touches the DB/vector store directly — only through these tools.
+## 3. Official classroom flow (acceptance loop)
 
-## 4. Database schema (SQLite)
+Teacher registers → creates classroom → student joins with code → teacher
+uploads material → OCR/RAG ingestion → AI extracts skills → grounded
+explanations → question banks → teacher reviews/edits/regenerates → approves →
+student learning path → skill lesson → Help Me if needed → practice →
+server-side evaluation → feedback → grade → mastery update → weak-skill memory
+→ future practice adapts → teacher + parent dashboards update.
 
-- `documents(id, filename, course_id, lesson_id, skill_id, status, char_count, chunk_count, created_at)`
-- `document_chunks(id, document_id, course_id, lesson_id, skill_id, page, chunk_index, text)`
-- `skills(id, course_id, lesson_id, skill_id[slug, unique per lesson], name, description, explanation, key_concepts[JSON], created_at, updated_at)`
-- `lesson_explanations(id, course_id, lesson_id[unique], title, explanation, key_concepts[JSON], created_at, updated_at)`
-- `question_banks(id, course_id, lesson_id, skill_id, version, status[pending_review|approved|rejected], teacher_feedback, created_at, updated_at)` — versions append-only, never overwritten
-- `questions(id, question_bank_id, skill_id, question_type, question_text, options[JSON], correct_answer[JSON], explanation, difficulty, created_at)`
-- `students(id, name, created_at)`
-- `assessments(id, student_id, question_bank_id, question_ids[JSON], status, score, created_at)`
-- `student_attempts(id, student_id, question_id, assessment_id, answer[JSON], correct, timestamp)`
-- `student_skill_performance(id, student_id, skill_id, total_attempts, correct_attempts, accuracy, last_updated)` — unique `(student_id, skill_id)`
+## 4. API overview
 
-## 5. RAG architecture
+Auth: `POST /auth/register`, `POST /auth/login`, `GET /auth/me`,
+`PATCH /auth/me` (JWT bearer, PBKDF2-hashed passwords).
 
-```text
-upload bytes → extract_document_text() → clean → sentence-aware chunks (overlap)
-→ persist chunks → encode dense vectors (MiniLM-L6-v2, cached to disk)
-→ MMR cosine search (+ score floor with top-k backoff)
+- Classrooms: `POST /classrooms`, `GET /classrooms`, `GET /classrooms/{id}`,
+  `PATCH /classrooms/{id}`, `POST /classrooms/join`,
+  `GET /classrooms/{id}/students`
+- Materials: `POST /materials/upload`, `GET /materials`,
+  `GET /materials/{id}`, `POST /materials/{id}/extract-skills`,
+  `GET|POST /materials/{id}/skills`, `PATCH|DELETE
+  /materials/{id}/skills/{skill}`, `POST /materials/{id}/generate-banks`,
+  `GET /materials/{id}/banks`
+- Teacher: `GET /teacher/overview`, `GET /teacher/banks`,
+  `GET|POST /teacher/banks/{id}[/approve|/reject|/regenerate]`,
+  `PATCH|DELETE|POST-regenerate /teacher/banks/{id}/questions/{qid}`,
+  `GET /teacher/classrooms/{id}/mastery`,
+  `GET /teacher/classrooms/{id}/students/{sid}`
+- Student: `GET|POST /student/profile`, `POST /student/support-signal`,
+  `GET /student/home`, `GET /student/learning-path`,
+  `GET /student/skills/{id}`, `GET /student/skills/{id}/help`,
+  `POST /student/assessments/start`, `POST /student/assessments/{id}/check`,
+  `POST /student/assessments/{id}/submit`, `GET /student/grades`,
+  `GET /student/progress`, `GET /student/skills/{id}/audio|/image`
+- Parent: `POST /parent/link-child`, `GET /parent/children`,
+  `GET /parent/children/{id}/progress|/grades|/materials`
+- Legacy AI-loop endpoints (`/documents/*`, `/agent/*`, `/teacher/*`,
+  `/assessment/*`, `/audio/*`, `/images/*`) are preserved for the Streamlit
+  dev tool and existing tests.
+
+## 5. Database & migration
+
+SQLite prototype (`data/sahlha.db`), PostgreSQL-friendly relational design.
+New tables: `users`, `classrooms`, `classroom_enrollments`,
+`parent_student_links`, `learning_materials`, `student_learning_profiles`;
+additive columns on `question_banks` (teacher/classroom/material ownership)
+and `student_skill_performance` (course/lesson/row scoping).
+
+Migration approach: **explicit, additive, idempotent** —
+`Base.metadata.create_all()` for new tables plus `_ensure_columns()` ALTERs
+for columns on pre-existing databases (`sahlha/app/database/database.py`).
+Nothing is dropped, renamed, or reset; pre-platform AI data keeps working
+(legacy rows are adopted/healed, e.g. unscoped performance rows gain scope).
+
+Note: fresh databases enforce scoped performance uniqueness
+`(student, course, lesson, skill)`; very old databases may still carry the
+legacy unscoped constraint — the repository merges defensively in that case.
+
+## 6. Environment
+
+See `.env.example`. Important variables:
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | SQLite path (default `./data/sahlha.db`) |
+| `JWT_SECRET` | JWT signing secret (change outside local dev) |
+| `GROQ_API_KEY` / `GROQ_MODEL` | Real LLM (else grounded fallback generator) |
+| `GROQ_TTS_VOICE` | TTS voice (needs key + accepted model terms) |
+| `PEXELS_API_KEY` | Skill images (else 503, UI continues without images) |
+| `MASTERY_*` | Mastery thresholds |
+| `MAX_UPLOAD_MB` | Upload cap (default 25) |
+| `CORS_EXTRA_ORIGINS` | Extra dev origins |
+
+OCR: native text for PDF/DOCX/**PPTX**/TXT; scanned PDFs/images use Tesseract
+when installed — otherwise ingestion records `ocr:unavailable` and the API
+returns a clear error instead of crashing.
+
+On Windows, install both external OCR dependencies (the Python packages alone
+are not enough):
+
+```powershell
+winget install --id tesseract-ocr.tesseract --exact --source winget
+winget install --id oschwartz10612.Poppler --exact --source winget
 ```
 
-- `embeddings.py`: dense semantic vectors first (384-d, normalized); TF-IDF fallback
-  keeps the loop working offline. Backend recorded in the vector cache; corpus/backend
-  changes trigger rebuilds, otherwise the cache is reused.
-- `chunking.py`: packs whole sentences (never mid-sentence cuts) with trailing-sentence
-  overlap between consecutive chunks.
-- `vectorstore.py`: cosine search over 3× candidates → MMR (λ=0.7) diversity →
-  calibrated score floor (paraphrase ≈0.09, junk ≈0.02) with backoff so the agent is
-  never starved of context. Proven by `tests/test_rag_proper.py`: a paraphrase with
-  (almost) no shared keywords still retrieves the right material.
+The backend detects standard Tesseract and WinGet Poppler installations.
+For custom locations, set `TESSERACT_CMD` to `tesseract.exe` and `POPPLER_PATH`
+to the folder containing `pdfinfo.exe` and `pdftoppm.exe` in `.env`, then restart
+the backend. Install the matching Tesseract language packs when using
+`OCR_LANGUAGES=ara+eng`.
 
-- `ocr.py` is a provider interface: native text for pdf/docx/txt; text-thin PDFs and
-  images go through **real Tesseract OCR** (this machine: Tesseract 5.4 + Poppler via
-  winget; elsewhere `winget install UB-Mannheim.TesseractOCR oschwartz10612.Poppler`,
-  or set `TESSERACT_CMD`/`POPPLER_PATH`). Every result reports `is_scanned` + `method`,
-  and `tests/test_ocr.py` proves scanned PNG/PDFs are actually read.
-- Every retrieved chunk carries `document_id, course_id, lesson_id, skill_id, page, chunk_id, text, score`.
-- Generation is **grounded**: only retrieved chunks enter the prompt; fallback generator builds
-  stems from chunk sentences. Full documents are never pasted into prompts.
-
-## 6. API endpoints
-
-```text
-POST /documents/upload
-POST /documents/{id}/process
-POST /agent/extract-skills            (lesson → agent-decided skills + explanations + lesson overview)
-GET  /agent/skills?course_id&lesson_id[&skill_id]
-POST /agent/explain-lesson             (whole-lesson overview explanation)
-GET  /agent/lesson                     (study bundle: lesson overview + skill explanations)
-POST /agent/generate-question-bank    (single skill)
-POST /agent/generate-lesson-banks     (one bank per skill)
-GET  /teacher/question-banks/pending
-GET  /teacher/question-banks/{id}
-POST /teacher/question-banks/{id}/approve
-POST /teacher/question-banks/{id}/reject        (JSON {feedback} → next version uses it)
-POST /teacher/questions/{qid}/flag              (JSON {reason} → excluded + feeds regeneration)
-GET  /teacher/flags
-POST /assessment/start                 (optional skill_id → that skill's 4-question exercise)
-POST /assessment/{id}/submit
-GET  /students/{id}/performance
-GET  /students/{id}/skill-progress?course_id&lesson_id   (per-skill explanation+exercise status)
-GET  /audio/skill?course_id&lesson_id&skill_id[&voice]   (WAV speech of a skill's explanation)
-GET  /audio/lesson?course_id&lesson_id[&voice]           (WAV speech of the lesson overview)
-GET  /images/skill?course_id&lesson_id&skill_id          (JPEG picture related to the skill)
-GET  /health
-```
-
-## 7. Run FastAPI
+## 7. Run the backend
 
 ```powershell
 pip install -r requirements.txt
@@ -201,57 +183,100 @@ copy .env.example .env   # add GROQ_API_KEY to enable the real LLM; optional
 python -m uvicorn sahlha.app.main:app --reload --port 8000
 ```
 
-## 8. Open the frontend
+API base URL: `http://127.0.0.1:8000`.
 
-The testing frontend is served by the API itself — no extra process needed:
-
-```text
-http://127.0.0.1:8000/app
-```
-
-## 9. Test the complete loop
+## 8. Run the Flutter app
 
 ```powershell
-python -m pytest tests/ -q   # 11 tests: RAG, generation, approve, reject→v2, assessment×4,
-                             # memory-adapts, HTTP loop, skill extraction+explanations,
-                             # one-bank-per-skill, skill banks approve+assess, skill HTTP endpoints
+cd mobile
+flutter pub get
+dart run build_runner build --delete-conflicting-outputs
+flutter analyze
+flutter test
+flutter run --dart-define API_BASE_URL=http://10.0.2.2:8000
+flutter build apk --debug
 ```
 
-Manual loop in the browser: **Teacher** tab → upload file → Extract skills (agent decides the
-count; review explanations) → Generate 10-question banks (one per skill) → approve each →
-**Student** tab → load the lesson's skills → per skill: read its explanation →
-start its 4-question exercise → submit → progress bar tracks completed skills →
-**Debug** tab shows phases/tool calls).
+API base URL configuration (`--dart-define API_BASE_URL=...`):
 
-## 10b. Audio explanations (Groq TTS → OpenRouter fallback)
+- **Android emulator** (default): `http://10.0.2.2:8000`
+- **Physical device over USB**: run `adb reverse tcp:8000 tcp:8000`, then use
+  `http://127.0.0.1:8000`
+- **Physical device over Wi-Fi**: use your machine's LAN IP,
+  e.g. `http://192.168.1.10:8000`, with the backend bound to `0.0.0.0`
 
-New tool pair `skill_explanation_to_audio` / `lesson_explanation_to_audio`
-(`sahlha/app/agent/tools/audio_tools.py`) turns stored explanations into speech via
-Groq's Orpheus English TTS (`canopylabs/orpheus-v1-english`, `sahlha/app/audio/tts.py`):
-long text is split sentence-aware, each chunk synthesized, and the WAVs stitched.
-Files are cached in `data/audio/` by content hash. The student UI has a 🔊 **Listen**
-button per skill. Requires `GROQ_API_KEY` **and** accepting the model terms in the Groq
-console — without them the endpoints return `503` (there is no offline TTS fallback).
-**Backup:** when Groq TTS fails (rate-limit/quota/5xx/timeout) and `OPENROUTER_API_KEY` is set,
-the same `tts.synthesize()` automatically retries via OpenRouter `POST /api/v1/audio/speech`
-(model `openai/gpt-4o-mini-tts` voice `alloy` by default, configurable via
-`OPENROUTER_TTS_MODEL`/`OPENROUTER_TTS_VOICE`). Both providers share the same chunking,
-stitching and hash cache; if both fail the existing non-fatal `skipped → 503` behavior is preserved.
+For a physical Android phone connected by USB, keep the backend running in
+one terminal, then run this from the repository root in another terminal:
 
-## 10c. Skill images (Pexels)
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-android-usb.ps1
+```
 
-Tool `fetch_skill_image` (`sahlha/app/agent/tools/image_tools.py`) builds a query from the
-skill's context (name + key concepts) and fetches one landscape picture via the Pexels API
-(`sahlha/app/images/pexels.py`), cached in `data/images/` and recorded on the skill row
-(`image_url`/`image_path`/`image_alt`; added to existing DBs by a startup migration).
-The student UI shows the picture above each explanation. Set `PEXELS_API_KEY` in `.env`
-(free at https://www.pexels.com/api/) — without it `GET /images/skill` returns `503`.
+The launcher checks the backend, configures USB port forwarding, and launches
+Flutter with `API_BASE_URL=http://127.0.0.1:8000`. With multiple devices, pass
+`-DeviceId SERIAL`. Run it again after reconnecting the phone. Changing
+`API_BASE_URL` requires restarting the Flutter run, not just hot reload.
+The default `10.0.2.2` address is for the Android emulator only.
 
-## 10. Known limitations & next steps
+If the checked-in `mobile/android/` scaffold ever disagrees with your local
+Flutter/Gradle versions, regenerate the platform folder (your `lib/` code is
+untouched):
 
-- Embeddings are TF-IDF (offline-friendly) — swap `embeddings.py`/`vectorstore.py` for
-  sentence-transformers + FAISS/Chroma when ready; interfaces are isolated.
-- OCR for scanned PDFs needs `tesseract` binary + `pdf2image`; otherwise text is best-effort.
-- No auth (single teacher/student IDs), no pagination, SQLite only — all intentional for the MVP.
-- Next: real auth, richer question types (short answer grading via LLM), spaced-repetition
-  scheduling on top of `StudentSkillPerformance`, and analytics over `student_attempts`.
+```powershell
+cd mobile
+flutter create --platforms=android .
+```
+
+## 9. Backend tests
+
+```powershell
+python -m pytest tests/ -q
+```
+
+40 tests: the original 25 (RAG, generation, approve/reject→v2, assessments,
+memory adaptation, HTTP loop, skills, audio, images) plus 15 platform tests
+(auth, hashing, JWT, role guards, classroom ownership, enrollment + duplicate
+prevention, cross-classroom isolation, parent linking + duplicates +
+unauthorized access, teacher vs supplementary separation, full bank lifecycle,
+edit/regenerate/remove/approve, correct-answer security, check-locks-attempt,
+grades, mastery, weak-skill adaptation, scoped-per-lesson mastery, teacher +
+parent progress).
+
+## 10. Local Flutter QA (your checklist)
+
+```powershell
+cd mobile
+flutter pub get
+dart run build_runner build --delete-conflicting-outputs
+flutter analyze
+flutter test
+flutter run --dart-define API_BASE_URL=http://10.0.2.2:8000
+```
+
+Then walk the demo flow (§11). The Flutter source was written without a local
+SDK in this environment — `build_runner` output (`*.g.dart`, `*.freezed.dart`)
+is git-ignored by design and generated on your machine.
+
+## 11. Demo flow
+
+**Teacher**: register/login → create classroom → note join code → upload
+curriculum → Find learning skills → review/edit skills → Generate practice
+questions → open a pending bank → review each question → edit/regenerate/
+remove as needed → Approve.
+**Student**: register/login → join classroom → complete the 1-minute learning
+profile → Home → Continue → Learning Path → open skill → Help Me if needed →
+Practice → immediate feedback → results → mastery update.
+**Teacher again**: open the student → updated grade, mastery, weak skills.
+**Parent**: register/login → link child with the 8-letter code → child
+progress, grades, activity → upload supplementary material.
+
+## 12. Known limitations (non-blocking)
+
+- Embeddings are TF-IDF (offline-friendly); swap `rag/embeddings.py` +
+  `rag/vectorstore.py` for sentence-transformers + FAISS/Chroma later.
+- Scanned-PDF OCR needs the Tesseract binary + `pdf2image`, else a clear
+  error is returned.
+- No pagination on list endpoints; SQLite only; JWT is a 7-day prototype
+  session without refresh-token rotation.
+- TTS/skill images need `GROQ_API_KEY` (+ accepted model terms) /
+  `PEXELS_API_KEY`; the app degrades gracefully without them.

@@ -17,6 +17,8 @@ DENSE_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 class DenseEmbeddingModel:
     name = "dense:" + DENSE_MODEL_NAME
+    backend = name
+    dense = True
 
     def __init__(self) -> None:
         from sentence_transformers import SentenceTransformer
@@ -28,9 +30,21 @@ class DenseEmbeddingModel:
             self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False),
             dtype=np.float32)
 
+    # Platform compat aliases (pr-1 API: embed/embed_query/fit).
+    def embed(self, texts: list[str]) -> np.ndarray:
+        return self.encode(texts)
+
+    def embed_query(self, text: str) -> np.ndarray:
+        return self.encode([text])[0]
+
+    def fit(self, texts: list[str]):
+        return self.encode(texts)
+
 
 class TfidfEmbeddingModel:
     name = "tfidf"
+    backend = name
+    dense = False
 
     def __init__(self) -> None:
         from sahlha.app.config import settings
@@ -63,6 +77,21 @@ class TfidfEmbeddingModel:
             self.fit(texts)
         assert self.vectorizer is not None
         return normalize(self.vectorizer.transform(texts)).toarray().astype(np.float32)
+
+    # Platform compat aliases.
+    def embed(self, texts: list[str]) -> np.ndarray:
+        return self.encode(texts)
+
+    def embed_query(self, text: str) -> np.ndarray:
+        return self.encode([text])[0]
+
+
+def use_tfidf() -> bool:
+    """Platform compat: True when falling back to TF-IDF."""
+    try:
+        return not dense_available()
+    except Exception:
+        return True
 
 
 _embeddings = None

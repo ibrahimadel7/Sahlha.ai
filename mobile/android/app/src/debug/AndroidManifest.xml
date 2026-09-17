@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug only: allow cleartext HTTP to reach a local dev backend
+         (Android emulator 10.0.2.2, adb reverse, or LAN IP). -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

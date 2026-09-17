@@ -6,12 +6,32 @@ and cache the WAV on disk keyed by content hash. The LLM never touches audio byt
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import re
+import tempfile
 
 from sqlalchemy.orm import Session
 
 from sahlha.app.audio import tts
 from sahlha.app.database.repositories import repositories as repo
+
+logger = logging.getLogger(__name__)
+
+_VOICE_RE = re.compile(r"[^A-Za-z0-9 _-]")
+
+
+def sanitize_voice(voice: str | None) -> str | None:
+    """Keep the TTS voice a short, safe token (pure — unit tested).
+
+    The value is interpolated into the cache key and forwarded to the TTS
+    provider, so overlong/garbage input must never reach either. Returns
+    None when no usable voice was supplied (caller falls back to default).
+    """
+    if voice is None:
+        return None
+    cleaned = _VOICE_RE.sub("", voice.strip())[:64].strip()
+    return cleaned or None
 
 
 def _voice_used(voice: str | None) -> str:
@@ -122,8 +142,18 @@ def _cached_or_synth(text: str, voice: str | None) -> tuple[str, str, bool]:
             for sibling in _cache_candidates(text, voice_used):
                 if os.path.exists(sibling):
                     return _repair_cached_file(sibling), voice_used, True
-    wav, synth_voice = tts.synthesize(text, voice)
-    fmt = tts.sniff_audio_format(wav)
+    try:
+        wav, synth_voice = tts.synthesize(text, voice)
+    except (ValueError, RuntimeError):
+        raise
+    except Exception as exc:
+        # Never leak provider internals/secrets to clients — calm 503 downstream.
+        logger.warning("TTS synthesis failed: %s", type(exc).__name__)
+        raise RuntimeError("Audio is unavailable right now.") from exc
+    try:
+        fmt = tts.sniff_audio_format(wav)
+    except Exception:
+        fmt = "wav"
     ext = "mp3" if fmt == "mp3" else "wav"
     # Normalize fresh WAVs so cached files are always browser-playable.
     if ext == "wav":
@@ -131,9 +161,29 @@ def _cached_or_synth(text: str, voice: str | None) -> tuple[str, str, bool]:
             wav = tts.normalize_wav(wav)
         except Exception:
             pass
+        try:
+            if hasattr(tts, "valid_wav") and not tts.valid_wav(wav):
+                raise RuntimeError("Audio is unavailable right now.")
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
     path = expected_path(text, voice_used, ext)
-    with open(path, "wb") as fh:
-        fh.write(wav)
+    # Re-check after synthesis: concurrent request may have populated cache.
+    if os.path.exists(path):
+        return path, synth_voice, True
+    import tempfile as _tf
+    fd, tmp_path = _tf.mkstemp(dir=settings.audio_dir, suffix=f".{ext}.part")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(wav)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return path, synth_voice, False
 
 
@@ -158,6 +208,10 @@ def skill_explanation_to_audio(db: Session, *, course_id: str, lesson_id: str,
         raise ValueError(f"Skill {skill_id} has no explanation yet — run extract-skills first")
     text = skill_audio_text(skill.name, skill.explanation)
     path, voice_used, cached = _cached_or_synth(text, voice)
+    try:
+        repo.set_media(db, skill, audio_path=path)
+    except Exception:
+        pass
     return _audio_result(path, voice_used, cached,
                          {"skill_id": skill_id, "chars": len(text)})
 
@@ -170,5 +224,18 @@ def lesson_explanation_to_audio(db: Session, *, course_id: str, lesson_id: str,
         raise ValueError(f"Lesson {course_id}/{lesson_id} has no explanation yet — run explain-lesson first")
     text = f"{row.title}. {row.explanation}" if row.title else row.explanation
     path, voice_used, cached = _cached_or_synth(text, voice)
+    try:
+        repo.set_media(db, row, audio_path=path)
+    except Exception:
+        pass
     return _audio_result(path, voice_used, cached,
                          {"lesson_id": lesson_id, "chars": len(text)})
+
+
+def valid_audio_file(path: str) -> bool:
+    import wave
+    try:
+        with wave.open(path, "rb") as stream:
+            return stream.getnframes() > 0 and bool(stream.readframes(1))
+    except (OSError, EOFError, wave.Error, AttributeError):
+        return False

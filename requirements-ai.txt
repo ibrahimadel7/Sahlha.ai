@@ -1,0 +1,2 @@
+# Optional; base backend uses TF-IDF + BM25 when this is unavailable.
+sentence-transformers>=3.0

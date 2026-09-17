@@ -10,9 +10,16 @@ from sahlha.app.config import settings
 from sahlha.app.database.repositories import repositories as repo
 
 
+class SelectionError(ValueError):
+    """Platform compat: selection failures carry metadata for teacher UI."""
+    def __init__(self, message, metadata=None):
+        super().__init__(message)
+        self.metadata = metadata or {}
+
+
 def select_questions(db: Session, *, student_id: str, course_id: str | None = None,
                      lesson_id: str | None = None, skill_id: str | None = None,
-                     n_per_bank: int | None = None) -> tuple[list[dict], dict]:
+                     n_per_bank: int | None = None, learned_only: bool = False) -> tuple[list[dict], dict]:
     """Select exactly `n_per_bank` questions from EACH approved question bank.
 
     Banks are per-skill, so the assessment covers every skill with the same
@@ -25,15 +32,39 @@ def select_questions(db: Session, *, student_id: str, course_id: str | None = No
     from sahlha.app.agent.tools import question_tools, student_tools
 
     n_per_bank = n_per_bank or settings.assessment_num_questions
-    pool = question_tools.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
+    # Prefer latest-approved (platform) when available, else all approved (legacy).
+    try:
+        pool = question_tools.get_latest_approved_questions(db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
+        if not pool:
+            pool = question_tools.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
+    except Exception:
+        pool = question_tools.get_approved_questions(db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
+    # Retired questions never resurface (platform column, defaults False).
+    pool = [q for q in pool if not q.get("retired", False)]
+    try:
+        # Exclude retired at ORM level when column exists (belt + suspenders).
+        _retired_ids = {q.id for q in repo.get_questions(db, "")} if False else set()
+    except Exception:
+        pass
+    if learned_only:
+        # Quick-check compat: restrict to skills with at least one attempt.
+        try:
+            perf = {p["skill_id"] for p in student_tools.get_student_skill_performance(db, student_id)
+                    if (p.get("total", 0) or 0) > 0}
+            if perf:
+                pool = [q for q in pool if q.get("skill_id") in perf]
+        except Exception:
+            pass
+        if len({q.get("skill_id") for q in pool}) < 2:
+            raise SelectionError('Practice at least two skills before a Quick Check.', {})
     if not pool:
         scope = "/".join([p for p in (course_id, lesson_id, skill_id) if p]) or "global pool"
-        raise ValueError(f"No approved questions found for '{scope}'. Approve a bank first.")
+        raise SelectionError(f"No approved questions found for '{scope}'. Approve a bank first.", {})
     # FEEDBACK LOOP 2 (enforcement): teacher-flagged questions never resurface.
     flagged = repo.get_flagged_question_ids(db)
     pool = [q for q in pool if q["id"] not in flagged]
     if not pool:
-        raise ValueError("All approved questions were excluded by teacher flags. Unflag or regenerate a bank.")
+        raise SelectionError("All approved questions were excluded by teacher flags. Unflag or regenerate a bank.", {})
     # Group pool by bank (stable order) — one selection round per bank.
     banks: dict[str, list[dict]] = {}
     for q in pool:

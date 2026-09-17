@@ -340,9 +340,23 @@ def generate_questions_llm(system: str, user: str, context_chunks: list[dict],
     return fallback_questions(context_chunks, skill_id, n, feedback), "fallback(no-api-key)"
 
 
-def complete_json(system: str, user: str) -> tuple[dict | list, str]:
+def temperature_for(task: str = "") -> float:
+    """Compat for pr-1 callers: grounding-first defaults (skill 0.15, questions 0.4)."""
+    t = (task or "").lower()
+    if "question" in t:
+        return 0.4
+    if "explan" in t or "lesson" in t:
+        return 0.3
+    if "consolid" in t or "skill" in t or "verif" in t:
+        return 0.15
+    return 0.4
+
+
+def complete_json(system: str, user: str, task: str | None = None,
+                   temperature: float | None = None) -> tuple[dict | list, str]:
     """Generic structured call. Returns (parsed_json, backend). Falls back raises-free? No:
-    raises RuntimeError when no LLM is configured so callers can use grounded fallbacks."""
+    raises RuntimeError when no LLM is configured so callers can use grounded fallbacks.
+    `task`/`temperature` accepted for pr-1 compat (grounding-first; currently fixed routing)."""
     if not llm_available():
         raise RuntimeError("no-llm-configured")
     try:

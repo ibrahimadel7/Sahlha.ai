@@ -1,0 +1,23 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins-dependencies
+.idea/
+.DS_Store
+*.iml
+
+# Generated (regenerate locally with build_runner)
+# NOTE: keep generated files OUT of git for this prototype.
+*.g.dart
+*.freezed.dart
+
+# Android
+android/.gradle/
+android/app/debug/
+android/app/*.apk
+android/local.properties
+
+# iOS
+ios/Pods/
+ios/.symlinks/

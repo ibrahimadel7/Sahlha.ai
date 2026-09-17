@@ -12,16 +12,19 @@ from sahlha.app.agent.tools import explanation_tools
 from sahlha.app.database.repositories import repositories as repo
 
 
-def register_skill(db: Session, *, course_id: str, lesson_id: str, skill_data: dict) -> dict:
+def register_skill(db: Session, *, course_id: str, lesson_id: str, skill_data: dict | None = None,
+                   skill: dict | None = None) -> dict:
     """Persist one extracted skill (no explanation yet), including RAG provenance."""
+    # Compat: pr-1 callers pass `skill=`, ours pass `skill_data=`.
+    data = skill_data if skill_data is not None else (skill or {})
     row = repo.upsert_skill(db, course_id=course_id, lesson_id=lesson_id,
-                            skill_id=skill_data["skill_id"],
-                            name=skill_data.get("name", skill_data["skill_id"]),
-                            description=skill_data.get("description", ""),
-                            key_concepts=skill_data.get("key_concepts", []),
-                            learning_objective=skill_data.get("learning_objective", ""),
-                            source_chunk_ids=skill_data.get("source_chunk_ids", []),
-                            source_evidence=skill_data.get("source_evidence", []))
+                            skill_id=data["skill_id"],
+                            name=data.get("name", data["skill_id"]),
+                            description=data.get("description", ""),
+                            key_concepts=data.get("key_concepts", []),
+                            learning_objective=data.get("learning_objective", ""),
+                            source_chunk_ids=data.get("source_chunk_ids", []),
+                            source_evidence=data.get("source_evidence", []))
     return _to_dict(row)
 
 
@@ -63,3 +66,30 @@ def _to_dict(s) -> dict:
             "has_image": bool(getattr(s, "image_path", "")),
             "image_alt": getattr(s, "image_alt", "") or "",
             "has_audio": has_audio}
+
+
+def serialize_skill(row) -> dict:
+    """Platform compat: superset of _to_dict with pr-1 enrichment fields (defaults)."""
+    base = _to_dict(row)
+    for k in ("prerequisites", "misconceptions", "difficulty", "source_section_ids",
+              "evidence_chunk_ids", "learning_content"):
+        base.setdefault(k, getattr(row, k, [] if "ids" in k or k in ("prerequisites", "misconceptions") else ({} if k in ("learning_content",) else "")))
+    # pr-1 media validators (valid_*_file) if available, else keep bool flags.
+    try:
+        from sahlha.app.agent.tools.image_tools import valid_image_file as _vimg
+        base["has_image"] = bool(_vimg(getattr(row, "image_path", "") or ""))
+    except Exception:
+        pass
+    try:
+        from sahlha.app.agent.tools.audio_tools import valid_audio_file as _vaud
+        base["has_audio"] = bool(_vaud(getattr(row, "audio_path", "") or "") or base.get("has_audio"))
+    except Exception:
+        pass
+    return base
+
+
+def list_skills(db: Session, *, course_id: str, lesson_id: str):
+    return repo.list_skills(db, course_id=course_id, lesson_id=lesson_id)
+
+
+get_skill = repo.get_skill

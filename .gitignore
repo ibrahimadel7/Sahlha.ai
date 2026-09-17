@@ -4,6 +4,7 @@ __pycache__/
 .env.*.local
 !.env.example
 data/
+/data/
 *.db
 *.sqlite*
 .pytest_cache/
@@ -11,3 +12,6 @@ data/
 venv/
 .firecrawl/
 *.log
+edits.md
+edits2.md
+/testsss

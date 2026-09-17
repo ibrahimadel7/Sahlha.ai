@@ -18,6 +18,7 @@ The LLM never touches image bytes or API keys.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 
 from sqlalchemy.orm import Session
@@ -84,6 +85,8 @@ def _lesson_context(db: Session, *, course_id: str, lesson_id: str) -> dict:
             pass
     return ctx
 
+logger = logging.getLogger(__name__)
+
 
 def fetch_skill_image(db: Session, *, course_id: str, lesson_id: str,
                       skill_id: str, force: bool = False) -> dict:
@@ -99,7 +102,15 @@ def fetch_skill_image(db: Session, *, course_id: str, lesson_id: str,
     skill = repo.get_skill(db, course_id=course_id, lesson_id=lesson_id, skill_id=skill_id)
     if skill is None:
         raise ValueError(f"Skill {skill_id} not found in {course_id}/{lesson_id}")
-    if skill.image_path and os.path.exists(skill.image_path) and not force:
+    return _fetch_for_row(db, skill, force=force)
+
+
+def _fetch_for_row(db, skill, force=False):
+    from sahlha.app.config import settings
+    skill_id = getattr(skill, "skill_id", skill.lesson_id)
+    course_id = getattr(skill, "course_id", "general") or "general"
+    lesson_id = getattr(skill, "lesson_id", "lesson_1") or "lesson_1"
+    if valid_image_file(skill.image_path) and not force:
         return {"skill_id": skill_id, "path": skill.image_path, "source_url": skill.image_url,
                 "alt": skill.image_alt, "cached": True}
     lesson_ctx = _lesson_context(db, course_id=course_id, lesson_id=lesson_id)
@@ -115,16 +126,46 @@ def fetch_skill_image(db: Session, *, course_id: str, lesson_id: str,
         # category + topic needed to understand the skill.
         **lesson_ctx,
     })
-    found = pexels.fetch_related_image(query)
+    try:
+        found = pexels.fetch_related_image(query)
+    except (ValueError, RuntimeError):
+        raise
+    except Exception as exc:
+        # Network/provider failures must degrade to a calm 503, never a 500.
+        logger.warning("Image fetch failed: %s", type(exc).__name__)
+        raise RuntimeError("No picture is available right now.") from exc
     os.makedirs(settings.image_dir, exist_ok=True)
     digest = hashlib.sha1(found["bytes"]).hexdigest()[:16]
-    path = os.path.join(settings.image_dir, f"{skill.skill_id[:60]}_{digest}.jpg".replace("/", "_"))
-    with open(path, "wb") as fh:
-        fh.write(found["bytes"])
-    skill.image_url = found["page_url"]
-    skill.image_path = path
-    skill.image_alt = found["alt"]
-    db.commit()
+    path = os.path.join(settings.image_dir, f"{digest}.jpg".replace("/", "_"))
+    # Atomic write so a concurrent reader never sees a half-written JPEG.
+    import tempfile
+
+    fd, tmp_path = tempfile.mkstemp(dir=settings.image_dir, suffix=".jpg.part")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(found["bytes"])
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    repo.set_media(db, skill, image_url=found["page_url"], image_path=path, image_alt=found["alt"])
     return {"skill_id": skill_id, "path": path, "source_url": found["page_url"],
             "alt": found["alt"], "photographer": found["photographer"],
             "query": query, "cached": False}
+
+
+def valid_image_file(path):
+    try:
+        return bool(path and os.path.isfile(path) and os.path.getsize(path) >= 1024)
+    except OSError:
+        return False
+
+
+def fetch_lesson_image(db, *, course_id, lesson_id, force=False):
+    row = repo.get_lesson_explanation(db, course_id=course_id, lesson_id=lesson_id)
+    if row is None:
+        raise ValueError("Lesson explanation not found")
+    return _fetch_for_row(db, row, force)

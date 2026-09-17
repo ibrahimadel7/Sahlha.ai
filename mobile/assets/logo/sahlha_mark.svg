@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Abstract Sahlha "S" mark: two rounded teal strokes + warm dots. Original, non-botanical. -->
+  <circle cx="49" cy="9" r="7" fill="#FBBF24"/>
+  <circle cx="12" cy="53" r="6" fill="#FBBF24"/>
+  <path d="M44 12 C32 12 26 17 26 24 C26 33 46 31 46 42 C46 49 38 54 27 54"
+        fill="none" stroke="#0E9388" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="26" cy="24" r="4.5" fill="#0B6E64"/>
+  <circle cx="46" cy="42" r="4.5" fill="#0B6E64"/>
+</svg>

@@ -71,13 +71,19 @@ class Settings(BaseSettings):
     groq_tts_model: str = "canopylabs/orpheus-v1-english"
     groq_tts_voice: str = "troy"
     groq_tts_max_chars: int = 900  # per TTS request; longer text is chunked + stitched
+    groq_tts_speed: float = 1.0  # provider-level rate (0.25-4.0); calm default, no text hacks
+    openrouter_tts_speed: float = 1.0  # only applied by models that support `speed`
+    tts_target_chars: int = 550  # preferred natural speech unit; max stays 900
     audio_dir: str = "./data/audio"
     # Backup TTS via OpenRouter (OpenAI-compatible audio/speech). Used when Groq TTS fails.
     # Per OpenRouter docs: POST /api/v1/audio/speech with mp3/pcm, e.g. fish-audio/s2.1-pro-free:free (free) or openai/gpt-4o-mini-tts-2025-12-15
     openrouter_tts_model: str = "fish-audio/s2.1-pro-free:free"
     openrouter_tts_voice: str = "alloy"
-    openrouter_tts_format: str = "pcm"
-    openrouter_tts_sample_rate: int = 24000
+    # MP3 default: self-describing sample rate, always plays at normal speed.
+    # Use pcm only with a matching OPENROUTER_TTS_SAMPLE_RATE (Fish 44100,
+    # OpenAI 24000) — a mismatch plays deep + slow.
+    openrouter_tts_format: str = "mp3"
+    openrouter_tts_sample_rate: int = 44100
 
     # Pexels image search (one related image per skill). Empty => image tool unavailable.
     pexels_api_key: str = ""

@@ -225,6 +225,22 @@ def lesson_audio(db: Session, *, course_id: str, lesson_id: str,
                                                    lesson_id=lesson_id, voice=voice)
 
 
+def skill_envelope(db: Session, *, course_id: str, lesson_id: str,
+                   skill_id: str, voice: str | None = None) -> dict:
+    from sahlha.app.agent.tools import audio_tools
+
+    return audio_tools.skill_envelope(db, course_id=course_id, lesson_id=lesson_id,
+                                      skill_id=skill_id, voice=voice)
+
+
+def lesson_envelope(db: Session, *, course_id: str, lesson_id: str,
+                    voice: str | None = None) -> dict:
+    from sahlha.app.agent.tools import audio_tools
+
+    return audio_tools.lesson_envelope(db, course_id=course_id,
+                                       lesson_id=lesson_id, voice=voice)
+
+
 def skill_image(db: Session, *, course_id: str, lesson_id: str,
                 skill_id: str, force: bool = False) -> dict:
     from sahlha.app.agent.tools import image_tools

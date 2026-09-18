@@ -230,6 +230,14 @@ class _ReadAloudButtonState extends ConsumerState<ReadAloudButton>
         classroomId: widget.classroomId,
         supplementary: widget.supplementary,
       );
+  late final String _envelopeUrl = ref
+      .read(studentRepositoryProvider)
+      .skillEnvelopeUrl(
+        skillId: widget.skillId,
+        materialId: widget.materialId,
+        classroomId: widget.classroomId,
+        supplementary: widget.supplementary,
+      );
 
   /// Cached on every build: `ref` cannot be used in [dispose].
   AudioService? _audio;
@@ -257,7 +265,7 @@ class _ReadAloudButtonState extends ConsumerState<ReadAloudButton>
       await audio.resume();
       return;
     }
-    final err = await audio.playUrl(_url);
+    final err = await audio.playUrl(_url, envelopeUrl: _envelopeUrl);
     if (err != null && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(err), duration: const Duration(seconds: 2)),
@@ -326,10 +334,14 @@ class _ReadAloudButtonState extends ConsumerState<ReadAloudButton>
                         const SizedBox(height: 2),
                         Text(
                           switch (state) {
-                            ReadAloudState.loading =>
+                            ReadAloudState.loading ||
+                            ReadAloudState.ready =>
                               'Getting the voice ready…',
                             ReadAloudState.playing => 'Sahlha is reading…',
                             ReadAloudState.paused => 'Paused — resume anytime.',
+                            ReadAloudState.stopped => 'Finished — replay anytime.',
+                            ReadAloudState.error =>
+                              'Voice unavailable — try again soon.',
                             ReadAloudState.idle =>
                               'Hear it in a friendly voice.',
                           },

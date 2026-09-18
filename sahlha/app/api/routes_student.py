@@ -237,6 +237,8 @@ def skill_audio(skill_id: str, material_id: str, classroom_id: str | None = None
                 supplementary: bool = False, voice: str | None = None,
                 student: m.User = Depends(deps.require_student),
                 db: Session = Depends(get_db)):
+    from fastapi import BackgroundTasks as _BT  # local import: keeps header block stable
+
     course_id, lesson_id = _resolve_scope(db, student, material_id, classroom_id, supplementary)
     try:
         result = legacy.skill_audio(db, course_id=course_id, lesson_id=lesson_id,
@@ -251,7 +253,84 @@ def skill_audio(skill_id: str, material_id: str, classroom_id: str | None = None
                        str(exc)[:200])
         raise HTTPException(503, AUDIO_UNAVAILABLE)
     path = _media_file(result["path"], unavailable=AUDIO_UNAVAILABLE)
-    return FileResponse(path, media_type="audio/wav", filename=f"{skill_id}.wav")
+    # Sniff the real container (WAV vs MP3): serving MP3 as audio/wav makes
+    # <audio>/just_audio fail silently. Matches the legacy /audio route.
+    try:
+        from sahlha.app.audio import tts as _tts
+
+        with open(path, "rb") as fh:
+            head = fh.read(16)
+        media_type = _tts.audio_mime_for_bytes(head)
+        if _tts.sniff_audio_format(head) == "unknown" and path.lower().endswith(".mp3"):
+            media_type = "audio/mpeg"
+    except Exception:
+        media_type = result.get("media_type") or "audio/wav"
+    ext = "mp3" if media_type == "audio/mpeg" else "wav"
+    metrics = result.get("metrics") or {}
+    headers = {
+        "X-Cache": "HIT" if result.get("cached") else "MISS",
+        "X-Audio-Format": ext,
+        "X-Speech-Prepare-Ms": str(metrics.get("speech_prepare_ms", "")),
+        "X-TTS-Request-Ms": str(metrics.get("tts_request_ms", "")),
+        "X-TTS-Total-Ms": str(metrics.get("total_ms", metrics.get("total_generation_ms", ""))),
+        "X-TTS-Provider": str(metrics.get("provider", "")),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=86400",
+    }
+    headers = {k: v for k, v in headers.items() if v != ""}
+    # Warm the likely-next skill in the background (one finalized skill max).
+    try:
+        from sahlha.app.database.database import SessionLocal as _SessionLocal
+        from sahlha.app.agent.tools import audio_tools as _audio_tools
+
+        def _warm(cid=course_id, lid=lesson_id, sid=skill_id, v=voice):
+            try:
+                with _SessionLocal() as _db:
+                    _audio_tools.prefetch_next_skill_audio(
+                        _db, course_id=cid, lesson_id=lid,
+                        current_skill_id=sid, voice=v)
+            except Exception:
+                pass
+
+        import threading as _threading
+        _threading.Thread(target=_warm, daemon=True).start()
+    except Exception:
+        pass
+    return FileResponse(path, media_type=media_type, filename=f"{skill_id}.{ext}",
+                        headers=headers)
+
+
+@router.get("/skills/{skill_id}/audio-envelope")
+def skill_audio_envelope(skill_id: str, material_id: str, classroom_id: str | None = None,
+                         supplementary: bool = False, voice: str | None = None,
+                         student: m.User = Depends(deps.require_student),
+                         db: Session = Depends(get_db)):
+    """Lip-sync envelope for one skill's speech audio (tiny cacheable JSON).
+
+    Same scope, text and errors as the sibling audio endpoint: 404 when the
+    skill has no finalized explanation, 503 when TTS is unavailable. The
+    client degrades to its cadence animation whenever this is missing, so the
+    lesson never breaks. Levels are fractions of total duration — the client
+    maps playback position/duration to an index with one rule.
+    """
+    from fastapi.responses import JSONResponse as _JSONResponse
+
+    course_id, lesson_id = _resolve_scope(db, student, material_id, classroom_id, supplementary)
+    try:
+        result = legacy.skill_envelope(db, course_id=course_id, lesson_id=lesson_id,
+                                       skill_id=skill_id, voice=voice)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        logger.warning("skill envelope unavailable for %s/%s: %s", course_id, lesson_id,
+                       str(exc)[:200])
+        raise HTTPException(503, AUDIO_UNAVAILABLE)
+    from sahlha.app.audio import envelope as _envelope
+
+    return _JSONResponse(
+        _envelope.envelope_payload(result["levels"], result["kind"]),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.get("/skills/{skill_id}/image")

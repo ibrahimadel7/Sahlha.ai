@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import '../../../core/audio/sound_effects.dart';
 import '../../../core/theme/sahlha_spacing.dart';
 import '../examples/presentation/adaptive_example_screen.dart';
 import 'widgets/joyful_cards.dart';
@@ -124,6 +127,10 @@ class SkillLessonScreen extends ConsumerWidget {
                 ),
             showVisual: () => _showVisual(context, hasImage: skill.hasImage),
             continueLearning: () {
+              // Subtle tap first (fire-and-forget: navigation never waits).
+              try {
+                unawaited(ref.read(soundEffectsProvider).tap());
+              } catch (_) {}
               if (skill.exerciseReady) {
                 context.push(
                   practiceLocation(
@@ -192,16 +199,29 @@ class SkillLessonScreen extends ConsumerWidget {
     required bool hasImage,
   }) async {
     if (kind == 'read_aloud') {
-      final url = ref
-          .read(studentRepositoryProvider)
-          .skillAudioUrl(
-            skillId: skillId,
-            materialId: materialId,
-            classroomId: classroomId,
-            supplementary: supplementary,
-          );
-      final err = await ref.read(audioServiceProvider).playUrl(url);
+      final repo = ref.read(studentRepositoryProvider);
+      final url = repo.skillAudioUrl(
+        skillId: skillId,
+        materialId: materialId,
+        classroomId: classroomId,
+        supplementary: supplementary,
+      );
+      final envelopeUrl = repo.skillEnvelopeUrl(
+        skillId: skillId,
+        materialId: materialId,
+        classroomId: classroomId,
+        supplementary: supplementary,
+      );
+      final err = await ref
+          .read(audioServiceProvider)
+          .playUrl(url, envelopeUrl: envelopeUrl);
       if (context.mounted) {
+        if (err != null) {
+          // Real failure (not a learning mistake): gentle error nudge.
+          try {
+            unawaited(ref.read(soundEffectsProvider).failure());
+          } catch (_) {}
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(err ?? 'Playing your lesson…'),
@@ -291,7 +311,7 @@ class SkillLessonScreen extends ConsumerWidget {
   }
 }
 
-class _LessonReading extends StatefulWidget {
+class _LessonReading extends ConsumerStatefulWidget {
   const _LessonReading({
     super.key,
     required this.skill,
@@ -314,10 +334,10 @@ class _LessonReading extends StatefulWidget {
   final VoidCallback help, showVisual, continueLearning;
   final Future<SkillHelp> Function() example;
   @override
-  State<_LessonReading> createState() => _LessonReadingState();
+  ConsumerState<_LessonReading> createState() => _LessonReadingState();
 }
 
-class _LessonReadingState extends State<_LessonReading> {
+class _LessonReadingState extends ConsumerState<_LessonReading> {
   int _section = 0;
   bool _examples = false;
   Future<SkillHelp>? _example;
@@ -328,10 +348,20 @@ class _LessonReadingState extends State<_LessonReading> {
     super.dispose();
   }
 
-  void _showExamples() => setState(() {
-    _examples = true;
-    _example ??= widget.example();
-  });
+  void _tap() {
+    // Very subtle selection click; fire-and-forget so paging never waits.
+    try {
+      unawaited(ref.read(soundEffectsProvider).tap());
+    } catch (_) {}
+  }
+
+  void _showExamples() {
+    _tap();
+    setState(() {
+      _examples = true;
+      _example ??= widget.example();
+    });
+  }
   @override
   Widget build(BuildContext context) {
     final skill = widget.skill;
@@ -407,7 +437,10 @@ class _LessonReadingState extends State<_LessonReading> {
                         _Segment(
                           label: 'Learn',
                           selected: !_examples,
-                          onTap: () => setState(() => _examples = false),
+                          onTap: () {
+                            _tap();
+                            setState(() => _examples = false);
+                          },
                         ),
                         _Segment(
                           label: 'Examples',

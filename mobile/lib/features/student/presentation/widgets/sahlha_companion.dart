@@ -45,10 +45,16 @@ class SahlhaCompanion extends StatefulWidget {
     this.size = 64,
     this.label,
     this.mood = CompanionMood.idle,
+    this.mouthOpen,
   });
   final double size;
   final String? label;
   final CompanionMood mood;
+
+  /// True lip-sync signal in [0, 1] (0 closed, 1 fully open), driven by the
+  /// actual playback position via [AudioCompanion]. Null keeps the local
+  /// speech-like cadence (previews, MP3 without envelope, tests).
+  final double? mouthOpen;
   @override
   State<SahlhaCompanion> createState() => _SahlhaCompanionState();
 }
@@ -84,7 +90,11 @@ class _SahlhaCompanionState extends State<SahlhaCompanion>
       builder: (_, _) => SizedBox.square(
         dimension: widget.size,
         child: CustomPaint(
-          painter: _CompanionPainter(_motion.value, widget.mood),
+          painter: _CompanionPainter(
+            _motion.value,
+            widget.mood,
+            mouthOpen: widget.mouthOpen,
+          ),
         ),
       ),
     );
@@ -95,9 +105,12 @@ class _SahlhaCompanionState extends State<SahlhaCompanion>
 }
 
 class _CompanionPainter extends CustomPainter {
-  const _CompanionPainter(this.phase, this.mood);
+  const _CompanionPainter(this.phase, this.mood, {this.mouthOpen});
   final double phase;
   final CompanionMood mood;
+
+  /// True lip-sync signal in [0, 1]; null falls back to cadence animation.
+  final double? mouthOpen;
   @override
   void paint(Canvas c, Size size) {
     c.save();
@@ -203,8 +216,27 @@ class _CompanionPainter extends CustomPainter {
     final double mouthW;
     switch (mood) {
       case CompanionMood.speaking:
-        opening = 2 + 6 * math.sin(phase * math.pi * 48).abs();
-        mouthW = 10;
+        final signal = mouthOpen?.clamp(0.0, 1.0);
+        if (signal != null) {
+          // TRUE SYNC: driven by the actual playback position (speech-energy
+          // for WAV, word-timed for MP3). Silence closes the mouth.
+          opening = 1.6 + 6.2 * signal;
+          mouthW = 11 - 2.0 * signal;
+          break;
+        }
+        // Fallback cadence when no envelope is available: ~14 openings per
+        // 6s ticker loop (≈2.3/s, real syllable rate) with a slower phrase
+        // envelope so the mouth pauses between phrases like real words.
+        // All frequencies are whole cycles per loop so the loop is seamless.
+        final loop = phase * math.pi * 2; // 0..2π per 6s
+        final wobble = math.sin(loop * 5 + 0.7) * 0.35;
+        final syll = math.sin(loop * 14 + wobble) * 0.5 + 0.5; // 0..1
+        final phrase = math.sin(loop * 2 + 1.1) * 0.5 + 0.5; // 0..1
+        final gate = ((phrase - 0.22) / (0.75 - 0.22)).clamp(0.0, 1.0);
+        final smooth = gate * gate * (3 - 2 * gate);
+        final open01 = syll * (0.25 + 0.75 * smooth);
+        opening = 1.6 + 6.2 * open01;
+        mouthW = 11 - 2.0 * open01;
         break;
       case CompanionMood.happy:
       case CompanionMood.celebrating:
@@ -283,5 +315,5 @@ class _CompanionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CompanionPainter old) =>
-      old.phase != phase || old.mood != mood;
+      old.phase != phase || old.mood != mood || old.mouthOpen != mouthOpen;
 }

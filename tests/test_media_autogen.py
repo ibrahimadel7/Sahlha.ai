@@ -10,7 +10,23 @@ from sahlha.app.rag import ingestion
 from sahlha.app.services import services as svc
 from tests.conftest import SAMPLE_TEXT
 
-FAKE_WAV = b"RIFF" + b"\x00" * 2048
+def _valid_wav_bytes(duration_ms: int = 100) -> bytes:
+    """Playable mono 16-bit WAV (the old b"RIFF"+zeros fixture was rejected
+    by the valid_wav gate, so autogeneration tests never exercised audio)."""
+    import io
+    import wave
+
+    nframes = max(1, 22050 * duration_ms // 1000)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(22050)
+        w.writeframes(b"\x01\x02" * nframes)
+    return buf.getvalue()
+
+
+FAKE_WAV = _valid_wav_bytes()
 FAKE_JPEG = b"\xff\xd8\xff" + b"\x00" * 2048
 
 

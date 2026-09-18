@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'widgets/joyful_cards.dart';
 import 'widgets/lesson_content.dart';
 import 'widgets/playful_background.dart';
@@ -8,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/audio/sound_effects.dart';
 import '../../../core/widgets/sahlha_widgets.dart'
     show
         SahlhaAppBar,
@@ -91,11 +94,74 @@ class _PracticeScreenState extends ConsumerState<PracticeScreen> {
     }
   }
 
+  /// The shared sound service, or null when audio cannot be set up.
+  /// Reading the provider can throw in constrained environments (e.g.
+  /// missing platform plugins); the lesson always continues silently.
+  SoundEffectsService? _sfxOrNull() {
+    try {
+      return ref.read(soundEffectsProvider);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Check the current answer, then give immediate audio feedback.
+  /// The tap sound is fired by the caller BEFORE state updates so the UI
+  /// never waits for audio; correct/wrong plays the moment the result
+  /// lands. Failures play the gentle error nudge. Never throws.
+  Future<void> _checkWithSound() async {
+    final controller = ref.read(practiceControllerProvider.notifier);
+    final before = ref.read(practiceControllerProvider);
+    final questionId = before.current?.id;
+    await controller.checkCurrent();
+    if (!mounted || questionId == null) return;
+    final after = ref.read(practiceControllerProvider);
+    final check = after.checked[questionId];
+    final sfx = _sfxOrNull();
+    if (check != null) {
+      if (sfx != null) unawaited(check.correct ? sfx.correct() : sfx.wrong());
+    } else if (after.error != null) {
+      if (sfx != null) unawaited(sfx.failure());
+    }
+  }
+
+  /// Submit the finished practice. Completion/celebration is handled by
+  /// the result listener below; only real failures nudge here.
+  Future<void> _submitWithSound() async {
+    await ref.read(practiceControllerProvider.notifier).submit();
+    if (!mounted) return;
+    final after = ref.read(practiceControllerProvider);
+    if (after.result == null && after.error != null) {
+      final sfx = _sfxOrNull();
+      if (sfx != null) unawaited(sfx.failure());
+    }
+  }
+
+  /// One celebratory sound per finished lesson/quiz. A newly-mastered
+  /// skill gets the rewarding skill sound; any other finish gets the
+  /// slightly bigger lesson/quiz celebration. Exactly one sound, never
+  /// stacked.
+  void _playCompletionSound(PracticeState state) {
+    final result = state.result;
+    if (result == null) return;
+    final mastered = result.masteryStates.values.any((s) => s == 'mastered');
+    final sfx = _sfxOrNull();
+    if (sfx == null) return;
+    unawaited(
+      sfx.play(
+        SoundEffectsService.completionEffectFor(mastered: mastered),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(practiceControllerProvider);
     ref.listen(practiceControllerProvider.select((s) => s.result), (_, result) {
-      if (result != null) _elapsed.stop();
+      if (result != null) {
+        _elapsed.stop();
+        _playCompletionSound(ref.read(practiceControllerProvider));
+      }
     });
     final controller = ref.read(practiceControllerProvider.notifier);
     final text = Theme.of(context).textTheme;
@@ -202,9 +268,13 @@ class _PracticeScreenState extends ConsumerState<PracticeScreen> {
                                 : null,
                             onTap: check != null || state.checking
                                 ? null
-                                : () async {
+                                : () {
+                                    // Immediate subtle tap (fire-and-forget:
+                                    // the UI updates below without waiting).
+                                    final sfx = _sfxOrNull();
+                                    if (sfx != null) unawaited(sfx.tap());
                                     controller.answerCurrent(i);
-                                    await controller.checkCurrent();
+                                    unawaited(_checkWithSound());
                                   },
                           ),
                         )
@@ -272,7 +342,9 @@ class _PracticeScreenState extends ConsumerState<PracticeScreen> {
                         SahlhaPrimaryButton(
                           label: 'Check answer',
                           loading: state.checking,
-                          onPressed: valid ? controller.checkCurrent : null,
+                          onPressed: valid
+                              ? () => unawaited(_checkWithSound())
+                              : null,
                         ),
                       TextButton.icon(
                         onPressed: controller.requestSupportHint,
@@ -289,7 +361,7 @@ class _PracticeScreenState extends ConsumerState<PracticeScreen> {
                             : 'Next question →',
                         loading: state.submitting,
                         onPressed: state.isLast
-                            ? controller.submit
+                            ? () => unawaited(_submitWithSound())
                             : () {
                                 _answer.clear();
                                 controller.next();

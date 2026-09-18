@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/audio/sound_effects.dart';
 import '../../../core/auth/auth_controller.dart';
 import '../../../core/theme/sahlha_colors.dart';
 import '../../../core/theme/sahlha_spacing.dart';
@@ -174,6 +175,7 @@ class StudentProfileScreen extends ConsumerWidget {
                     ) ??
                     const SizedBox.shrink(),
                 const SizedBox(height: 12),
+                const _SoundEffectsTile(),
                 _Tile(
                   icon: Icons.class_outlined,
                   color: SahlhaColors.skySoft,
@@ -276,6 +278,65 @@ class StudentProfileScreen extends ConsumerWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SoundEffectsTile extends ConsumerWidget {
+  const _SoundEffectsTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final enabled = ref.watch(soundEnabledProvider);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: SahlhaSpacing.sm),
+      child: SahlhaCard(
+        padding: const EdgeInsets.all(SahlhaSpacing.md),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: SahlhaColors.tealSoft,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(
+                enabled
+                    ? Icons.volume_up_outlined
+                    : Icons.volume_off_outlined,
+                color: SahlhaColors.joyTealDark,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: SahlhaSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Sound effects',
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    enabled
+                        ? 'Gentle sounds for answers and celebrations'
+                        : 'All sound effects are off',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            Switch.adaptive(
+              value: enabled,
+              onChanged: (value) => ref
+                  .read(soundEnabledProvider.notifier)
+                  .setEnabled(value),
+            ),
+          ],
         ),
       ),
     );

@@ -1,12 +1,16 @@
-"""Groq text-to-speech provider (Orpheus English voices).
+"""Groq text-to-speech provider (Orpheus English voices) + OpenRouter fallback.
 
-Interface: `synthesize(text, voice=None) -> bytes` (single WAV).
-Long text is split sentence-aware and stitched. Swappable behind this module.
+Interface: `synthesize(text, voice=None) -> (bytes, voice_used)`.
+Text is first run through the deterministic speech pipeline
+(`audio/speech.py`: normalization + natural segmentation) so raw markdown,
+code and lists are never read aloud literally. Long text is segmented into
+natural speech units and stitched. Swappable behind this module.
 """
 from __future__ import annotations
 
 import io
 import os
+import time
 import wave
 
 
@@ -155,27 +159,119 @@ def _pcm_to_wav(pcm: bytes, framerate: int = 24000, nchannels: int = 1, sampwidt
     return buf.getvalue()
 
 
-def split_for_tts(text: str, max_chars: int = 900) -> list[str]:
-    """Sentence-aware splitter (pure — unit tested)."""
-    from sahlha.app.rag.text import split_sentences
+def _openrouter_sample_rate() -> int:
+    """Configured PCM sample rate (Hz) for wrapping raw OpenRouter PCM as WAV.
 
-    sentences = split_sentences(text.strip())
-    chunks, current = [], ""
-    for s in sentences:
-        if len(s) > max_chars:
-            if current:
+    Fish Audio (the default OpenRouter TTS model) returns 44100 Hz PCM by
+    default; OpenAI TTS returns 24000 Hz. Wrapping 44100 Hz bytes with a
+    24000 Hz header plays back at ~0.54x speed — deep and slow. The setting
+    (OPENROUTER_TTS_SAMPLE_RATE) must match the provider's actual rate.
+    """
+    try:
+        from sahlha.app.config import settings as _s
+
+        raw = os.getenv("OPENROUTER_TTS_SAMPLE_RATE", str(_s.openrouter_tts_sample_rate))
+        rate = int(str(raw).strip() or "44100")
+    except Exception:
+        rate = 44100
+    if rate < 8000 or rate > 48000:
+        rate = 44100
+    return rate
+
+
+def _parse_pcm_rate(content_type: str | None) -> int | None:
+    """Parse `rate=` from an `audio/pcm;rate=44100;channels=1` Content-Type.
+
+    OpenRouter returns the true PCM rate in the response header — the only
+    reliable source when models differ (Fish 44100 vs OpenAI 24000).
+    """
+    if not content_type:
+        return None
+    try:
+        import re as _re
+
+        m = _re.search(r"rate\s*=\s*(\d+)", content_type)
+        if m:
+            rate = int(m.group(1))
+            if 8000 <= rate <= 48000:
+                return rate
+    except Exception:
+        pass
+    return None
+
+
+def _response_content_type(resp) -> str | None:
+    """Best-effort Content-Type from an OpenAI SDK binary response."""
+    try:
+        r = getattr(resp, "response", None)
+        headers = getattr(r, "headers", None) if r is not None else getattr(resp, "headers", None)
+        if headers:
+            try:
+                return headers.get("content-type")
+            except Exception:
+                try:
+                    return headers.get("Content-Type")
+                except Exception:
+                    return None
+    except Exception:
+        pass
+    return None
+
+
+def split_for_tts(text: str, max_chars: int = 900) -> list[str]:
+    """Sentence-aware splitter (pure — unit tested).
+
+    Delegates to the speech pipeline so chunk boundaries are natural speech
+    units (paragraph → sentences). Overlong single sentences split at word
+    boundaries, never mid-word. Keeps the legacy signature for callers/tests.
+    """
+    from sahlha.app.audio import speech as _speech
+
+    try:
+        from sahlha.app.config import settings as _settings
+
+        target = int(getattr(_settings, "tts_target_chars", 550) or 550)
+    except Exception:
+        target = 550
+    normalized = _speech.normalize_for_speech(text)
+    if not normalized:
+        normalized = (text or "").strip()
+    if not normalized:
+        return [text[:max_chars]]
+    try:
+        return _speech.segment_for_speech(
+            normalized, target_chars=min(target, max_chars), max_chars=max_chars
+        )
+    except Exception:
+        # Never break synthesis because of segmentation: legacy packing.
+        from sahlha.app.rag.text import split_sentences
+
+        sentences = split_sentences(normalized)
+        chunks, current = [], ""
+        for s in sentences:
+            if len(s) > max_chars:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                # Word-boundary hard split (never mid-word).
+                words, buf = s.split(), ""
+                for w in words:
+                    cand = f"{buf} {w}".strip()
+                    if len(cand) > max_chars and buf:
+                        chunks.append(buf)
+                        buf = w
+                    else:
+                        buf = cand
+                if buf:
+                    chunks.append(buf)
+            elif len(current) + len(s) + 1 <= max_chars:
+                current = f"{current} {s}".strip()
+            else:
                 chunks.append(current)
-                current = ""
-            for i in range(0, len(s), max_chars):  # hard-split overlong sentence
-                chunks.append(s[i:i + max_chars])
-        elif len(current) + len(s) + 1 <= max_chars:
-            current = f"{current} {s}".strip()
-        else:
+                current = s
+        if current:
             chunks.append(current)
-            current = s
-    if current:
-        chunks.append(current)
-    return chunks or [text[:max_chars]]
+        return chunks or [normalized[:max_chars]]
 
 
 def stitch_wavs(wavs: list[bytes]) -> bytes:
@@ -208,14 +304,32 @@ def stitch_wavs(wavs: list[bytes]) -> bytes:
     return out.getvalue()
 
 
+def _tts_speed(which: str) -> float:
+    """Provider-level speech rate (no text hacks). Calm default 1.0."""
+    try:
+        from sahlha.app.config import settings as _s
+
+        raw = _s.groq_tts_speed if which == "groq" else _s.openrouter_tts_speed
+        speed = float(raw or 1.0)
+    except Exception:
+        speed = 1.0
+    return min(4.0, max(0.25, speed))
+
+
 def _synthesize_chunk(text: str, *, api_key: str, model: str, voice: str) -> bytes:
     from groq import Groq
 
     # Explicit timeout: fail fast to the OpenRouter backup instead of hanging.
-    # max_retries=1: don't burn time on SDK-internal backoff when throttled.
-    client = Groq(api_key=api_key, timeout=90, max_retries=1)
-    resp = client.audio.speech.create(model=model, voice=voice, input=text,
-                                      response_format="wav")
+    # max_retries=0: don't burn time on SDK-internal backoff when throttled.
+    client = Groq(api_key=api_key, timeout=30, max_retries=0)
+    kwargs: dict = dict(model=model, voice=voice, input=text,
+                        response_format="wav")
+    # Groq supports provider-level speed (0.25-4.0); calm default from settings.
+    try:
+        kwargs["speed"] = _tts_speed("groq")
+    except Exception:
+        pass
+    resp = client.audio.speech.create(**kwargs)
     # Groq SDK returns HttpxBinaryResponseContent with .read()
     if hasattr(resp, "read"):
         data = resp.read()
@@ -228,25 +342,59 @@ def _synthesize_chunk(text: str, *, api_key: str, model: str, voice: str) -> byt
     return data
 
 
+def _openrouter_candidates(model: str) -> list[str]:
+    """Configured model + at most one documented fallback (bounded cost)."""
+    candidates = [model]
+    # Single documented fallback; voxtral kept out to bound worst-case calls.
+    # A second fallback doubles per-chunk cost without evidence it helps.
+    fallback = "openai/gpt-4o-mini-tts-2025-12-15"
+    if fallback != model:
+        candidates.append(fallback)
+    return candidates
+
+
+def _openrouter_format_order() -> tuple[str, ...]:
+    """Configured container first (default mp3 — self-describing rate).
+
+    MP3 carries its own sample rate so it always plays at normal speed.
+    Raw PCM has no header: wrapping it with the wrong rate plays deep+slow
+    (Fish 44100 Hz labeled as 24000 Hz = 0.54x). Prefer MP3 unless the
+    operator explicitly opts into PCM with a matching OPENROUTER_TTS_SAMPLE_RATE.
+    """
+    try:
+        from sahlha.app.config import settings as _s
+
+        preferred = (os.getenv("OPENROUTER_TTS_FORMAT", _s.openrouter_tts_format) or "mp3").lower()
+    except Exception:
+        preferred = "mp3"
+    if preferred == "pcm":
+        return ("pcm", "mp3")
+    return ("mp3", "pcm")
+
+
 def _synthesize_chunk_openrouter(text: str, *, api_key: str, model: str, voice: str) -> bytes:
     from openai import OpenAI
 
     from sahlha.app.config import settings as _s
 
     base_url = os.getenv("OPENROUTER_BASE_URL", _s.openrouter_base_url)
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=90, max_retries=1)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
     # OpenRouter TTS per docs: response_format only mp3|pcm (wav is invalid → ZodError).
-    # Also try candidate models if the configured one is not available for this key/tier.
-    candidates = [model]
-    # Fallback list derived from OpenRouter docs: dated gpt-4o-mini-tts + voxtral
-    for alt in ("openai/gpt-4o-mini-tts-2025-12-15", "mistralai/voxtral-mini-tts-2603"):
-        if alt not in candidates:
-            candidates.append(alt)
+    # Bounded: configured model + one fallback; configured format first
+    # (default mp3 — plays at normal speed everywhere; pcm only when the
+    # operator matches OPENROUTER_TTS_SAMPLE_RATE to the provider).
+    # Max 4 calls per chunk, no retry loops.
+    candidates = _openrouter_candidates(model)
     last_exc: Exception | None = None
     for cand in candidates:
-        for fmt in ("mp3", "pcm"):
+        for fmt in _openrouter_format_order():
             try:
-                resp = client.audio.speech.create(model=cand, voice=voice, input=text, response_format=fmt)
+                kwargs: dict = dict(model=cand, voice=voice, input=text, response_format=fmt)
+                try:
+                    kwargs["speed"] = _tts_speed("openrouter")
+                except Exception:
+                    pass
+                resp = client.audio.speech.create(**kwargs)
                 if hasattr(resp, "read"):
                     data = resp.read()
                 elif hasattr(resp, "content"):
@@ -254,9 +402,14 @@ def _synthesize_chunk_openrouter(text: str, *, api_key: str, model: str, voice: 
                 else:
                     data = bytes(resp)
                 if data:
-                    # Normalize pcm → wav for consistent stitching
+                    # Normalize pcm → wav for consistent stitching. The true
+                    # rate comes from the response Content-Type
+                    # (audio/pcm;rate=44100) when present, else the configured
+                    # OPENROUTER_TTS_SAMPLE_RATE. Never hardcode 24000: Fish
+                    # PCM at 44100 wrapped as 24000 plays deep + slow.
                     if fmt == "pcm" and not data.startswith(b"RIFF"):
-                        return _pcm_to_wav(data)
+                        rate = _parse_pcm_rate(_response_content_type(resp)) or _openrouter_sample_rate()
+                        return _pcm_to_wav(data, framerate=rate)
                     return data
             except Exception as exc:
                 last_exc = exc
@@ -271,17 +424,62 @@ def _synthesize_chunk_openrouter(text: str, *, api_key: str, model: str, voice: 
     raise RuntimeError(f"OpenRouter TTS failed for all formats/models: {last_exc}")
 
 
-def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
-    """Returns (audio_bytes, voice_used). Groq → OpenRouter → error."""
+# Back-compat alias: older tests patch/call `_openrouter_chunk(text, voice?)`.
+# Keeps working with legacy positional (text, voice) by filling api_key/model
+# from settings, and honors the configured format order (pcm default).
+def _openrouter_chunk(text: str, voice: str | None = None, *args,
+                      api_key: str | None = None, model: str | None = None,
+                      **kwargs) -> bytes:
+    from sahlha.app.config import settings as _s
+
+    # Legacy positional second arg may be the voice ("alloy").
+    if args and voice is None and isinstance(args[0], str):
+        voice = args[0]
+    resolved_voice = voice or os.getenv("OPENROUTER_TTS_VOICE", _s.openrouter_tts_voice)
+    resolved_model = model or os.getenv("OPENROUTER_TTS_MODEL", _s.openrouter_tts_model)
+    resolved_key = api_key or _get_openrouter_tts_key() or "test-key"
+    return _synthesize_chunk_openrouter(text, api_key=resolved_key,
+                                        model=resolved_model, voice=resolved_voice)
+
+
+def _prepare_speech_text(text: str) -> tuple[str, float]:
+    """Normalize raw explanation -> speakable text + prepare latency (ms)."""
+    from sahlha.app.audio import speech as _speech
+
+    start = time.perf_counter()
+    try:
+        normalized = _speech.normalize_for_speech(text)
+    except Exception:
+        normalized = (text or "").strip()
+    prepare_ms = (time.perf_counter() - start) * 1000.0
+    return normalized, prepare_ms
+
+
+def synthesize_with_metrics(
+    text: str, voice: str | None = None
+) -> tuple[bytes, str, dict]:
+    """Like synthesize() but also returns latency/provider metrics (no text)."""
     from sahlha.app.config import settings
 
-    text = (text or "").strip()
-    if not text:
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("Nothing to synthesize: empty text")
+    normalized, prepare_ms = _prepare_speech_text(raw)
+    if not normalized:
         raise ValueError("Nothing to synthesize: empty text")
     groq_key = settings.groq_api_key or os.getenv("GROQ_API_KEY", "")
     or_key = _get_openrouter_tts_key()
     if not groq_key and not or_key:
         raise RuntimeError("TTS needs GROQ_API_KEY or OPENROUTER_API_KEY (and accepted model terms).")
+
+    total_start = time.perf_counter()
+    metrics: dict = {
+        "speech_prepare_ms": round(prepare_ms, 2),
+        "chars": len(normalized),
+        "chunks": 0,
+        "provider": "",
+        "cache": "miss",
+    }
 
     # ---------- Try Groq first ----------
     if groq_key:
@@ -293,11 +491,24 @@ def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
                 raise RuntimeError("Groq TTS needs the 'groq' package (pip install groq).") from exc
         else:
             voice_groq = voice or os.getenv("GROQ_TTS_VOICE", settings.groq_tts_voice)
-            chunks = split_for_tts(text, settings.groq_tts_max_chars)
+            # Map an explicit OpenRouter voice back to Groq default: alloy is
+            # meaningless to Orpheus, so fall back to troy instead of failing.
+            if voice_groq == "alloy":
+                voice_groq = os.getenv("GROQ_TTS_VOICE", settings.groq_tts_voice)
+            chunks = split_for_tts(normalized, settings.groq_tts_max_chars)
+            metrics["chunks"] = len(chunks)
+            req_start = time.perf_counter()
             try:
                 wavs = [_synthesize_chunk(c, api_key=groq_key, model=settings.groq_tts_model, voice=voice_groq) for c in chunks]
-                return stitch_wavs(wavs), voice_groq
+                out = stitch_wavs(wavs)
+                metrics.update({
+                    "tts_request_ms": round((time.perf_counter() - req_start) * 1000.0, 2),
+                    "total_generation_ms": round((time.perf_counter() - total_start) * 1000.0 + prepare_ms, 2),
+                    "provider": "groq",
+                })
+                return out, voice_groq, metrics
             except Exception as exc:
+                metrics["tts_request_ms"] = round((time.perf_counter() - req_start) * 1000.0, 2)
                 if not _is_retryable_tts_error(exc) or not or_key:
                     raise RuntimeError(f"Groq TTS request failed: {exc}") from exc
                 groq_err = exc
@@ -316,27 +527,59 @@ def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
             from sahlha.app.config import settings as _s2
 
             model = os.getenv("OPENROUTER_TTS_MODEL", _s2.openrouter_tts_model)
-            # Use explicit voice if provided, else OpenRouter default (alloy)
+            # Use explicit voice if provided, else OpenRouter default (alloy).
+            # Groq's troy is not valid for OpenRouter voices: map troy -> alloy
+            # unless the caller explicitly asked for troy on OpenRouter.
             voice_or = voice or os.getenv("OPENROUTER_TTS_VOICE", _s2.openrouter_tts_voice)
-            # Groq's troy not valid for OpenRouter; map to alloy if voice is troy and caller didn't explicitly set OpenRouter voice
-            if voice is None and voice_or == _s2.openrouter_tts_voice:
-                pass  # keep alloy
-            chunks = split_for_tts(text, _s2.groq_tts_max_chars)
-            wavs = [_synthesize_chunk_openrouter(c, api_key=or_key, model=model, voice=voice_or) for c in chunks]
+            if voice_or == "troy":
+                voice_or = os.getenv("OPENROUTER_TTS_VOICE", _s2.openrouter_tts_voice)
+            chunks = split_for_tts(normalized, _s2.groq_tts_max_chars)
+            metrics["chunks"] = len(chunks)
+            req_start = time.perf_counter()
+            # Resolve the chunk fn dynamically so tests patching the legacy
+            # `_openrouter_chunk` name still intercept OpenRouter synthesis.
+            chunk_fn = globals().get("_synthesize_chunk_openrouter")
+            legacy = globals().get("_openrouter_chunk")
+            if legacy is not None and legacy is not chunk_fn:
+                # A test (or caller) patched the legacy alias: honor it.
+                import inspect as _inspect
+
+                try:
+                    src = _inspect.getsource(legacy)
+                    is_alias = "_synthesize_chunk_openrouter" in src
+                except Exception:
+                    is_alias = True
+                if not is_alias:
+                    chunk_fn = legacy
+            wavs = [chunk_fn(c, api_key=or_key, model=model, voice=voice_or) for c in chunks]
             # Stitch by actual container: WAV chunks are re-encoded with a clean
             # header, MP3 chunks are byte-joined. Never serve MP3 as WAV.
             if wavs and all(_is_wav(w) for w in wavs):
-                return stitch_wavs(wavs), voice_or
-            if wavs and all(sniff_audio_format(w) == "mp3" for w in wavs):
-                return b"".join(wavs), voice_or
-            try:
-                return stitch_wavs(wavs), voice_or
-            except Exception:
-                # Mixed/unknown containers — join raw; callers sniff the MIME.
-                return b"".join(wavs), voice_or
+                out = stitch_wavs(wavs)
+            elif wavs and all(sniff_audio_format(w) == "mp3" for w in wavs):
+                out = b"".join(wavs)
+            else:
+                try:
+                    out = stitch_wavs(wavs)
+                except Exception:
+                    # Mixed/unknown containers — join raw; callers sniff the MIME.
+                    out = b"".join(wavs)
+            metrics.update({
+                "tts_request_ms": round((time.perf_counter() - req_start) * 1000.0, 2),
+                "total_generation_ms": round((time.perf_counter() - total_start) * 1000.0 + prepare_ms, 2),
+                "provider": "openrouter",
+                "fallback": bool(groq_key and groq_err is not None),
+            })
+            return out, voice_or, metrics
         except Exception as exc2:
             if groq_key:
                 raise RuntimeError(f"TTS failed (Groq: {locals().get('groq_err')} ; OpenRouter: {exc2})") from exc2
             raise RuntimeError(f"OpenRouter TTS request failed: {exc2}") from exc2
 
     raise RuntimeError("TTS unavailable")
+
+
+def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
+    """Returns (audio_bytes, voice_used). Groq → OpenRouter → error."""
+    out, voice_used, _ = synthesize_with_metrics(text, voice=voice)
+    return out, voice_used

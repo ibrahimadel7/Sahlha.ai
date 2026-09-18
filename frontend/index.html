@@ -150,19 +150,68 @@ function j(o){return JSON.stringify(o,null,2);}
 function show(el, data){ el.style.display='block'; el.textContent = typeof data==='string'? data : j(data); debugData=data; $('#outDebug').textContent=j(data); }
 function errBox(el, msg){ el.style.display='block'; el.textContent=msg; el.style.color='#dc2626'; }
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-// Robust audio playback: surfaces HTTP/decode failures instead of failing silently.
-// The backend sniffs the real container (WAV vs MP3) and sends the matching
-// Content-Type, so we preserve it on the Blob and call load() before play().
+// Playback state machine: idle → loading → ready → playing ⇄ paused → stopped,
+// with error as a terminal calm state. One state per <audio> element (stored on
+// the element), never several booleans that can disagree. Newest intent wins:
+// each play carries a request id + AbortController, so Skill A audio can never
+// cut in after the student moved to Skill B. Double taps reuse the in-flight
+// request instead of firing duplicate TTS fetches. Keeps the plain <audio>
+// element (progressive playback built in) — no MediaSource/WebAudio engine.
+const _audioFlights = new Map(); // audioEl -> {id, controller, url, state}
+let _audioSeq = 0;
+function _setAudioState(audioEl, btn, state, origText){
+  if(audioEl) audioEl.dataset.state = state;
+  if(!btn) return;
+  if(state==='loading'){ btn.disabled=true; btn.textContent='⏳ Loading audio…'; }
+  else if(state==='ready'){ btn.disabled=false; btn.textContent='▶️ Play cached audio'; }
+  else if(state==='playing'){ btn.disabled=false; btn.textContent='⏸️ Pause'; }
+  else if(state==='paused'){ btn.disabled=false; btn.textContent='▶️ Resume'; }
+  else if(state==='error'){ btn.disabled=false; btn.textContent=origText||'🔊 Listen to explanation'; }
+  else if(state==='stopped'||state==='idle'){ btn.disabled=false; btn.textContent=origText||'🔊 Listen to explanation'; }
+}
+function prefetchAudioUrl(url){
+  // Warm the backend disk cache for the likely-next skill (fetch, discard).
+  // Bounded: caller prefetches at most one next skill; failures are silent.
+  try{
+    if(!url || prefetchAudioUrl._seen?.has(url)) return;
+    (prefetchAudioUrl._seen ??= new Set()).add(url);
+    fetch(url, {priority:'low'}).then(r=>r.arrayBuffer().catch(()=>null)).catch(()=>{});
+  }catch{}
+}
 async function playAudioUrl(url, audioEl, btn, errEl){
   const origText = btn ? btn.textContent : '';
+  const prev = _audioFlights.get(audioEl);
+  // Single-flight: repeat taps for the same URL while loading reuse it.
+  if(prev && prev.url===url && prev.state==='loading') return;
+  // Pause toggle when the same URL is already playing.
+  if(prev && prev.url===url && prev.state==='playing' && !prev.controller?.signal.aborted){
+    try{ audioEl.pause(); }catch{}
+    prev.state='paused';
+    _setAudioState(audioEl, btn, 'paused', origText);
+    return;
+  }
+  if(prev && prev.url===url && prev.state==='paused'){
+    try{ await audioEl.play(); prev.state='playing'; _setAudioState(audioEl, btn, 'playing', origText); }catch{}
+    return;
+  }
+  // Cancel anything stale for this element first (newest intent wins).
+  try{ prev?.controller?.abort(); }catch{}
+  try{ audioEl.pause(); }catch{}
+  const id = ++_audioSeq;
+  const controller = new AbortController();
+  const flight = {id, controller, url, state:'loading'};
+  _audioFlights.set(audioEl, flight);
+  const stale = ()=> _audioFlights.get(audioEl)?.id !== id;
   try{
     if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
-    if(btn){ btn.disabled=true; btn.textContent='⏳ Loading audio…'; }
-    const r=await fetch(url);
+    _setAudioState(audioEl, btn, 'loading', origText);
+    const r=await fetch(url, {signal: controller.signal});
+    if(stale()) return; // a newer skill already took over
     if(r.status===503) throw new Error('Audio needs GROQ_API_KEY (+ TTS terms) or OPENROUTER_API_KEY on the backend.');
     if(!r.ok) throw new Error((await r.text()).slice(0,500) || ('HTTP '+r.status));
     const mime=(r.headers.get('content-type')||'').split(';')[0].trim() || 'audio/wav';
     const buf=await r.arrayBuffer();
+    if(stale()) return;
     if(!buf.byteLength) throw new Error('Empty audio response from server.');
     const blob=new Blob([buf], {type: mime});
     const oldSrc=audioEl.src;
@@ -171,17 +220,24 @@ async function playAudioUrl(url, audioEl, btn, errEl){
     audioEl.style.display='block';
     try{ audioEl.load(); }catch{}
     if(oldSrc && oldSrc.startsWith('blob:')){ try{ URL.revokeObjectURL(oldSrc); }catch{} }
-    audioEl.onerror=()=>{ if(errEl){ errEl.style.display='block'; errEl.textContent='⚠️ Audio failed to decode ('+mime+'). Try again — the backend regenerates broken cache files on demand.'; } };
+    flight.state='ready';
+    _setAudioState(audioEl, btn, 'ready', origText);
+    audioEl.onerror=()=>{ if(stale()) return; flight.state='error'; _setAudioState(audioEl, btn, 'error', origText); if(errEl){ errEl.style.display='block'; errEl.textContent='⚠️ Audio failed to decode ('+mime+'). Try again — the backend regenerates broken cache files on demand.'; } };
+    audioEl.onpause=()=>{ if(stale()||flight.state!=='playing') return; flight.state='paused'; _setAudioState(audioEl, btn, 'paused', origText); };
+    audioEl.onplay=()=>{ if(stale()) return; flight.state='playing'; _setAudioState(audioEl, btn, 'playing', origText); };
+    audioEl.onended=()=>{ if(stale()) return; flight.state='stopped'; _setAudioState(audioEl, btn, 'stopped', origText); };
     await audioEl.play();
+    if(stale()){ try{ audioEl.pause(); }catch{} return; }
   }catch(e){
+    if(stale()) return;
+    if(e && (e.name==='AbortError' || /aborted/i.test(String(e)))) return; // superseded, stay silent
+    flight.state='error';
     const msg=String(e && e.message || e);
     // play() rejects with NotAllowedError when autoplay is blocked: the user can
     // still press the native player button, so don't hide the element then.
-    if(/NotAllowedError|play\(\) request was interrupted/i.test(msg)){ try{ await audioEl.play().catch(()=>{}); }catch{} }
-    else if(errEl){ errEl.style.display='block'; errEl.textContent='⚠️ '+msg; }
-    else { alert(msg); }
-  }finally{
-    if(btn){ btn.disabled=false; btn.textContent=origText; }
+    if(/NotAllowedError|play\(\) request was interrupted/i.test(msg)){ flight.state='ready'; _setAudioState(audioEl, btn, 'ready', origText); try{ await audioEl.play().catch(()=>{}); }catch{} }
+    else if(errEl){ _setAudioState(audioEl, btn, 'error', origText); errEl.style.display='block'; errEl.textContent='⚠️ '+msg; }
+    else { _setAudioState(audioEl, btn, 'error', origText); alert(msg); }
   }
 }
 async function apiGet(path, params){
@@ -425,6 +481,17 @@ function renderStudent(){
     abtn.onclick=()=>{
       const url=api()+'/audio/skill?course_id='+encodeURIComponent(courseIdOf($('#s_course').value))+'&lesson_id='+encodeURIComponent(lessonIdOf($('#s_lesson').value))+'&skill_id='+encodeURIComponent(sk.skill_id);
       playAudioUrl(url, aud, abtn, aerr);
+      // Prefetch the likely-next skill while this one plays (backend warms its
+      // disk cache too). Bounded to one finalized next skill.
+      try{
+        const all=prog.skills||[];
+        const i=all.findIndex(x=>x.skill_id===sk.skill_id);
+        const nxt=all[i+1];
+        if(nxt && nxt.has_explanation!==false){
+          const nurl=api()+'/audio/skill?course_id='+encodeURIComponent(courseIdOf($('#s_course').value))+'&lesson_id='+encodeURIComponent(lessonIdOf($('#s_lesson').value))+'&skill_id='+encodeURIComponent(nxt.skill_id);
+          setTimeout(()=>prefetchAudioUrl(nurl), 1500);
+        }
+      }catch{}
     };
     inner.appendChild(abtn); inner.appendChild(aud); inner.appendChild(aerr);
     // NOTE: use insertAdjacentHTML (not innerHTML+=) — the latter re-parses the

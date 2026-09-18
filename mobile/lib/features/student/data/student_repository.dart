@@ -238,6 +238,26 @@ class StudentRepository {
     return uri.toString();
   }
 
+  /// Tiny lip-sync envelope for the same explanation (levels over normalized
+  /// time; see AudioService.envelopeFor). Same params/auth as [skillAudioUrl];
+  /// missing/unavailable degrades to the local cadence animation.
+  String skillEnvelopeUrl({
+    required String skillId,
+    required String materialId,
+    String? classroomId,
+    bool supplementary = false,
+  }) {
+    final uri = Uri.parse('$_base/student/skills/$skillId/audio-envelope').replace(
+      queryParameters: {
+        'material_id': materialId,
+        if (classroomId != null && classroomId.isNotEmpty)
+          'classroom_id': classroomId,
+        'supplementary': '$supplementary',
+      },
+    );
+    return uri.toString();
+  }
+
   /// Raw WAV bytes for one skill's explanation. Throws [ApiException]
   /// (including 401 session expiry and 503 unavailability) so the audio
   /// service can react; callers degrade to a calm message and the lesson

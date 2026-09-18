@@ -101,7 +101,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(audio.state, ReadAloudState.paused);
     await audio.stop();
-    expect(audio.state, ReadAloudState.idle);
+    expect(audio.state, ReadAloudState.stopped);
     player.playback.complete();
     await player.states.close();
   });
@@ -117,7 +117,47 @@ void main() {
     await start;
     expect(player.starts, 0);
     expect(player.sources, 0);
-    expect(audio.state, ReadAloudState.idle);
+    expect(audio.state, ReadAloudState.stopped);
+    await player.states.close();
+  });
+
+  test('rapid navigation plays only the latest skill', () async {
+    final player = Player();
+    final adapter = AudioAdapter();
+    final api = ApiClient()..dio.httpClientAdapter = adapter;
+    final audio = AudioService(player, api);
+    // Skill A starts, student immediately opens B then C (all downloads share
+    // the one test response; request ids still guarantee only C proceeds).
+    final a = audio.playUrl('http://localhost/skill-a.wav');
+    final b = audio.playUrl('http://localhost/skill-b.wav');
+    final c = audio.playUrl('http://localhost/skill-c.wav');
+    adapter.finish();
+    await Future.wait([a, b, c]);
+    expect(audio.activeUrl, 'http://localhost/skill-c.wav');
+    expect(player.sources, 1);
+    expect(player.starts, 1);
+    expect(audio.state, ReadAloudState.playing);
+    player.playback.complete();
+    await player.states.close();
+  });
+
+  test('mp3 fallback bytes play with the right container', () async {
+    final player = Player();
+    final adapter = AudioAdapter();
+    final api = ApiClient()..dio.httpClientAdapter = adapter;
+    final audio = AudioService(player, api);
+    // MP3 (ID3) must be accepted, not rejected as "not audio".
+    final start = audio.playUrl('http://localhost/lesson.mp3');
+    adapter.response.complete(
+      ResponseBody.fromBytes([
+        73, 68, 51, // ID3
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+      ], 200, headers: {Headers.contentTypeHeader: ['audio/mpeg']}),
+    );
+    expect(await start.timeout(const Duration(seconds: 3)), isNull);
+    expect(player.sources, 1);
+    expect(audio.state, ReadAloudState.playing);
+    player.playback.complete();
     await player.states.close();
   });
 }

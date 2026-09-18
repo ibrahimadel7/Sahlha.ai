@@ -131,6 +131,10 @@ def test_audio_cache_reuse_and_corruption(monkeypatch):
 
 def test_openrouter_pcm_wrapped_as_valid_wav(monkeypatch):
     import openai
+    # Pin the pcm path explicitly: the shipping default is mp3 (self-describing
+    # rate), while this test covers pcm → WAV wrapping at the configured rate.
+    monkeypatch.setattr(settings, 'openrouter_tts_format', 'pcm')
+    monkeypatch.delenv('OPENROUTER_TTS_FORMAT', raising=False)
     requests = []
     class Client:
         def __init__(self, **kwargs):
@@ -147,3 +151,17 @@ def test_openrouter_pcm_wrapped_as_valid_wav(monkeypatch):
     assert requests[0]['response_format'] == 'pcm'
     with wave.open(io.BytesIO(audio)) as reader:
         assert reader.getframerate() == settings.openrouter_tts_sample_rate
+
+
+def test_openrouter_default_prefers_mp3(monkeypatch):
+    """Shipping default must be mp3-first (normal speed, self-describing)."""
+    monkeypatch.setattr(settings, 'openrouter_tts_format', 'mp3')
+    monkeypatch.delenv('OPENROUTER_TTS_FORMAT', raising=False)
+    assert tts._openrouter_format_order()[0] == 'mp3'
+
+
+def test_pcm_rate_parsing_prefers_header():
+    assert tts._parse_pcm_rate('audio/pcm;rate=44100;channels=1') == 44100
+    assert tts._parse_pcm_rate('audio/pcm;rate=24000') == 24000
+    assert tts._parse_pcm_rate('audio/mpeg') is None
+    assert tts._parse_pcm_rate(None) is None

@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'avatar_motion.dart';
+
 /// Reusable Sahlha avatar moods. `idle/speaking/celebrating` are the core
 /// states; `happy/thinking/encouraging` are gentle expressive variants for
 /// the joyful Student world. `listening/retry` are kept for compatibility.
@@ -16,9 +18,10 @@ enum CompanionMood {
   encouraging,
 }
 
-/// Friendly teal robot. Blinks, breathes, sways its antenna; only speech
-/// moves the mouth. Meaningful reactions only — no constant bouncing.
-/// Reduced motion stops the ticker completely.
+/// Friendly teal robot. Blinks, breathes, sways its antenna and gestures
+/// with its hands while speaking; only speech moves the mouth. Meaningful
+/// reactions only — no constant bouncing. Reduced motion stops the ticker
+/// completely.
 enum SahlhaAvatarState {
   idle,
   speaking,
@@ -65,6 +68,13 @@ class _SahlhaCompanionState extends State<SahlhaCompanion>
     vsync: this,
     duration: const Duration(seconds: 6),
   );
+
+  /// Pure-Dart motion schedulers (no timers/controllers/listeners of their
+  /// own): advanced once per ticker frame below, so gestures and blinks ride
+  /// the existing animation without extra rebuilds. Nothing to dispose.
+  final _blink = BlinkScheduler();
+  final _gestures = GestureScheduler();
+  DateTime? _lastFrame;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -87,16 +97,37 @@ class _SahlhaCompanionState extends State<SahlhaCompanion>
   Widget build(BuildContext context) {
     final face = AnimatedBuilder(
       animation: _motion,
-      builder: (_, _) => SizedBox.square(
-        dimension: widget.size,
-        child: CustomPaint(
-          painter: _CompanionPainter(
-            _motion.value,
-            widget.mood,
-            mouthOpen: widget.mouthOpen,
+      builder: (_, _) {
+        // Wall-clock delta between frames drives the schedulers; clamped so
+        // jank or backgrounding can never teleport a gesture.
+        final now = DateTime.now();
+        var dt = 0.016;
+        final last = _lastFrame;
+        if (last != null) {
+          dt = now.difference(last).inMicroseconds / 1e6;
+        }
+        _lastFrame = now;
+        if (dt < 0) dt = 0;
+        if (dt > 0.1) dt = 0.1;
+        // The speaking mood comes from the existing audio-state mapping in
+        // AudioCompanion (playing → speaking, paused/stopped → idle): no
+        // second audio-state system is introduced here.
+        final speaking = widget.mood == CompanionMood.speaking;
+        final blink = _blink.advance(dt);
+        final hands = _gestures.advance(dt, speaking: speaking);
+        return SizedBox.square(
+          dimension: widget.size,
+          child: CustomPaint(
+            painter: _CompanionPainter(
+              _motion.value,
+              widget.mood,
+              mouthOpen: widget.mouthOpen,
+              blink: blink,
+              hands: hands,
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
     return widget.label == null
         ? ExcludeSemantics(child: face)
@@ -105,12 +136,25 @@ class _SahlhaCompanionState extends State<SahlhaCompanion>
 }
 
 class _CompanionPainter extends CustomPainter {
-  const _CompanionPainter(this.phase, this.mood, {this.mouthOpen});
+  const _CompanionPainter(
+    this.phase,
+    this.mood, {
+    this.mouthOpen,
+    this.blink = false,
+    this.hands = HandOffsets.zero,
+  });
   final double phase;
   final CompanionMood mood;
 
   /// True lip-sync signal in [0, 1]; null falls back to cadence animation.
   final double? mouthOpen;
+
+  /// Natural blink from [BlinkScheduler] (randomized gaps, ~0.12s lids).
+  final bool blink;
+
+  /// Circular-hand offsets from [GestureScheduler] in the painter's
+  /// 100-unit space; zero rests the hands against the body.
+  final HandOffsets hands;
   @override
   void paint(Canvas c, Size size) {
     c.save();
@@ -149,6 +193,13 @@ class _CompanionPainter extends CustomPainter {
       2.0,
       Paint()..color = const Color(0xFFFFF3D1),
     );
+    // Circular hands, resting against the body sides. While speaking the
+    // scheduler eases them through small teaching gestures; at rest the
+    // offsets decay to zero so the hands settle back onto the body.
+    // Drawn before the body so the inner edge tucks behind it.
+    final handPaint = Paint()..color = const Color(0xFF0A7C76);
+    c.drawCircle(Offset(9 + hands.leftDx, 66 + hands.leftDy), 8.5, handPaint);
+    c.drawCircle(Offset(91 + hands.rightDx, 68 + hands.rightDy), 8.5, handPaint);
     c.drawOval(
       const Rect.fromLTWH(9, 23, 81, 70),
       Paint()
@@ -169,9 +220,9 @@ class _CompanionPainter extends CustomPainter {
       ),
       Paint()..color = const Color(0xFF193B4A),
     );
-    final blink = phase > .91 && phase < .94;
     // Eye expressions per mood: happy/celebrating = joyful arcs,
     // thinking = slightly narrowed, encouraging = bright.
+    // `blink` comes from the randomized scheduler, independent of playback.
     final eyeH = blink
         ? 2.0
         : switch (mood) {
@@ -315,5 +366,9 @@ class _CompanionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CompanionPainter old) =>
-      old.phase != phase || old.mood != mood || old.mouthOpen != mouthOpen;
+      old.phase != phase ||
+      old.mood != mood ||
+      old.mouthOpen != mouthOpen ||
+      old.blink != blink ||
+      old.hands != hands;
 }

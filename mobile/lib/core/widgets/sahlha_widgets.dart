@@ -546,6 +546,75 @@ class SahlhaRobotMark extends StatelessWidget {
   }
 }
 
+/// Shared pre-auth brand lockup using the new Sahlha logo.
+///
+/// Used on splash, onboarding, role, login, and register ONLY.
+/// Prominent but not oversized; fades + gently scales in on first build.
+/// Keeps the app palette and typography untouched.
+class SahlhaPreAuthBrand extends StatelessWidget {
+  const SahlhaPreAuthBrand({
+    super.key,
+    this.width = 176,
+    this.showTagline = false,
+    this.alignment = Alignment.center,
+    this.animationDuration = const Duration(milliseconds: 550),
+  });
+
+  final double width;
+  final bool showTagline;
+  final Alignment alignment;
+  final Duration animationDuration;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Align(
+      alignment: alignment,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: animationDuration,
+        curve: Curves.easeOutCubic,
+        builder: (context, value, child) {
+          return Opacity(
+            opacity: value,
+            child: Transform.scale(
+              scale: 0.94 + (0.06 * value),
+              child: child,
+            ),
+          );
+        },
+        child: Semantics(
+          image: true,
+          label: 'Sahlha logo',
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SahlhaFullLogo(width: width),
+              if (showTagline) ...[
+                const SizedBox(height: SahlhaSpacing.sm),
+                Text(
+                  'Same curriculum.',
+                  style: text.titleMedium?.copyWith(
+                    color: SahlhaColors.muted,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                Text(
+                  'Different path to mastery.',
+                  style: text.titleMedium?.copyWith(
+                    color: SahlhaColors.muted,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // -------------------------------------------------------------- path nodes
 enum PathNodeState { completed, current, upcoming, locked }
 

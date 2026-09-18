@@ -52,6 +52,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo/
+    - assets/onboarding/
     - assets/sounds/
 
 # App launcher icons generated from the Sahlha robot logo.

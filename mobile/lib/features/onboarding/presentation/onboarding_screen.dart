@@ -26,17 +26,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     (
       title: 'Learning feels better when it fits you.',
       body: 'Sahlha turns classroom lessons into small steps, practice, and gentle support.',
-      icon: Icons.auto_stories_outlined,
+      image: 'assets/onboarding/reading_avatar.png',
     ),
     (
       title: 'Same curriculum. Different path.',
       body: 'You learn the same skills as your class — at a pace and in a way that works for you.',
-      icon: Icons.route_outlined,
+      image: 'assets/onboarding/progress_avatar.png',
     ),
     (
       title: 'Practice, feedback, mastery.',
       body: 'Short practice, calm feedback, and clear progress. One step at a time.',
-      icon: Icons.check_circle_outline,
+      image: 'assets/onboarding/practice_avatar.png',
     ),
   ];
 
@@ -49,10 +49,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           padding: const EdgeInsets.all(SahlhaSpacing.page),
           child: Column(
             children: [
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: SahlhaLogo(size: 40),
-              ),
               Expanded(
                 child: PageView.builder(
                   controller: _pages,
@@ -63,18 +59,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     return Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Container(
-                          width: 120,
-                          height: 120,
-                          decoration: const BoxDecoration(
-                            color: SahlhaColors.tealSoft,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            slide.icon,
-                            size: 56,
-                            color: SahlhaColors.teal,
-                          ),
+                        Image.asset(
+                          slide.image,
+                          width: 240,
+                          height: 240,
+                          fit: BoxFit.contain,
+                          semanticLabel: 'Sahlha avatar illustration',
                         ),
                         const SizedBox(height: SahlhaSpacing.xxl),
                         Text(

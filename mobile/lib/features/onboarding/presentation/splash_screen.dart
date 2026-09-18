@@ -4,8 +4,6 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/auth/auth_controller.dart';
 import '../../auth/domain/app_user.dart';
-import '../../../core/theme/sahlha_colors.dart';
-import '../../../core/theme/sahlha_spacing.dart';
 import '../../../core/widgets/sahlha_widgets.dart';
 
 class SplashScreen extends ConsumerStatefulWidget {
@@ -36,22 +34,16 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final text = Theme.of(context).textTheme;
-    return Scaffold(
+    return const Scaffold(
       body: SafeArea(
         child: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const SahlhaFullLogo(width: 240),
-              const SizedBox(height: SahlhaSpacing.xl),
-              Text(
-                'Same curriculum.',
-                style: text.titleMedium?.copyWith(color: SahlhaColors.muted),
-              ),
-              Text(
-                'Different path to mastery.',
-                style: text.titleMedium?.copyWith(color: SahlhaColors.muted),
+              SahlhaPreAuthBrand(
+                width: 200,
+                showTagline: true,
+                animationDuration: Duration(milliseconds: 700),
               ),
             ],
           ),

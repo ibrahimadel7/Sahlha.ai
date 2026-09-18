@@ -488,6 +488,64 @@ class SahlhaLogo extends StatelessWidget {
   }
 }
 
+/// Full Sahlha lockup from the brand PNG (robot + "Sahlha" wordmark).
+///
+/// Expects `assets/logo/sahlha_logo.png` (transparent PNG, ~1024px wide).
+/// Falls back to the vector [SahlhaLogo] if the PNG is missing so the app
+/// never crashes before the asset is added.
+class SahlhaFullLogo extends StatelessWidget {
+  const SahlhaFullLogo({super.key, this.width = 220, this.fit = BoxFit.contain});
+
+  final double width;
+  final BoxFit fit;
+
+  static const _pngPath = 'assets/logo/sahlha_logo.png';
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      _pngPath,
+      width: width,
+      fit: fit,
+      errorBuilder: (_, _, _) => SahlhaLogo(
+        size: width * 0.32,
+        showWordmark: true,
+      ),
+    );
+  }
+}
+
+/// Robot-only mark from the brand PNG (no wordmark).
+///
+/// Expects `assets/logo/sahlha_icon.png`. Useful for avatars, splash marks,
+/// and anywhere the full lockup would be too small to read.
+class SahlhaRobotMark extends StatelessWidget {
+  const SahlhaRobotMark({super.key, this.size = 84, this.borderRadius = 24});
+
+  final double size;
+  final double borderRadius;
+
+  static const _pngPath = 'assets/logo/sahlha_icon.png';
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: Image.asset(
+        _pngPath,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => SvgPicture.asset(
+          'assets/logo/sahlha_mark.svg',
+          width: size,
+          height: size,
+        ),
+      ),
+    );
+  }
+}
+
 // -------------------------------------------------------------- path nodes
 enum PathNodeState { completed, current, upcoming, locked }
 

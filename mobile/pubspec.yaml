@@ -46,9 +46,31 @@ dev_dependencies:
   json_serializable: ^6.14.1
   riverpod_generator: ^4.0.9
   riverpod_lint: ^3.1.9
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
   assets:
     - assets/logo/
     - assets/sounds/
+
+# App launcher icons generated from the Sahlha robot logo.
+# Source files (drop your PNGs here):
+#   assets/logo/sahlha_logo.png -> full lockup (robot + "Sahlha") for in-app use
+#   assets/logo/sahlha_icon.png  -> icon-only (robot head, no wordmark) for launchers
+# Then run: dart run flutter_launcher_icons
+flutter_launcher_icons:
+  android: true
+  ios: false
+  web:
+    generate: true
+  windows:
+    generate: false
+  macos:
+    generate: false
+  image_path: "assets/logo/sahlha_icon.png"
+  adaptive_icon_background: "#FBFAF7"
+  adaptive_icon_foreground: "assets/logo/sahlha_icon.png"
+  web_background_color: "#FBFAF7"
+  web_theme_color: "#0E9388"
+  background_color: "#FBFAF7"

@@ -43,7 +43,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const SahlhaLogo(size: 84),
+              const SahlhaFullLogo(width: 240),
               const SizedBox(height: SahlhaSpacing.xl),
               Text(
                 'Same curriculum.',

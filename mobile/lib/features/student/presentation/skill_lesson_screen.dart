@@ -2,7 +2,6 @@ import 'dart:async';
 
 import '../../../core/audio/sound_effects.dart';
 import '../../../core/theme/sahlha_spacing.dart';
-import '../examples/presentation/adaptive_example_screen.dart';
 import 'widgets/avatar_teacher.dart';
 import 'widgets/lesson_content.dart';
 import 'widgets/playful_background.dart';
@@ -113,15 +112,6 @@ class SkillLessonScreen extends ConsumerWidget {
             classroomId: classroomId,
             supplementary: supplementary,
             help: () => _openHelp(context, ref, skill),
-            example: () => ref
-                .read(studentRepositoryProvider)
-                .skillHelp(
-                  skillId: skillId,
-                  materialId: materialId,
-                  classroomId: classroomId,
-                  supplementary: supplementary,
-                  kind: 'example',
-                ),
             showVisual: () => _showVisual(context, hasImage: skill.hasImage),
             continueLearning: () {
               // Subtle tap first (fire-and-forget: navigation never waits).
@@ -318,7 +308,6 @@ class _LessonReading extends ConsumerStatefulWidget {
     this.classroomId,
     this.supplementary = false,
     required this.help,
-    required this.example,
     required this.showVisual,
     required this.continueLearning,
   });
@@ -329,14 +318,11 @@ class _LessonReading extends ConsumerStatefulWidget {
   final String? classroomId;
   final bool supplementary;
   final VoidCallback help, showVisual, continueLearning;
-  final Future<SkillHelp> Function() example;
   @override
   ConsumerState<_LessonReading> createState() => _LessonReadingState();
 }
 
 class _LessonReadingState extends ConsumerState<_LessonReading> {
-  bool _examples = false;
-  Future<SkillHelp>? _example;
   final _scroll = ScrollController();
   @override
   void dispose() {
@@ -349,14 +335,6 @@ class _LessonReadingState extends ConsumerState<_LessonReading> {
     try {
       unawaited(ref.read(soundEffectsProvider).tap());
     } catch (_) {}
-  }
-
-  void _showExamples() {
-    _tap();
-    setState(() {
-      _examples = true;
-      _example ??= widget.example();
-    });
   }
 
   /// Stop any lesson audio before navigating so it never leaks into the
@@ -425,8 +403,8 @@ class _LessonReadingState extends ConsumerState<_LessonReading> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  // Segmented Learn / Examples / Practice (visual tabs,
-                  // architecture preserved: Practice still routes).
+                  // Segmented Learn / Practice (visual tabs; the Examples
+                  // feature is unwired from the app but its files are kept).
                   Container(
                     padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
@@ -438,16 +416,8 @@ class _LessonReadingState extends ConsumerState<_LessonReading> {
                       children: [
                         _Segment(
                           label: 'Learn',
-                          selected: !_examples,
-                          onTap: () {
-                            _tap();
-                            setState(() => _examples = false);
-                          },
-                        ),
-                        _Segment(
-                          label: 'Examples',
-                          selected: _examples,
-                          onTap: _showExamples,
+                          selected: true,
+                          onTap: _tap,
                         ),
                         _Segment(
                           label: 'Practice',
@@ -461,89 +431,35 @@ class _LessonReadingState extends ConsumerState<_LessonReading> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // EXAMPLES: truly interactive visual lesson driven by REAL
-                  // backend SkillHelp/SkillBundle data (no hardcoded content).
-                  // The Future is cached in [_showExamples] so switching tabs
-                  // never refires the request and build() never fetches.
-                  if (_examples)
-                    FutureBuilder<SkillHelp>(
-                      future: _example,
-                      builder: (context, snapshot) {
-                        if (snapshot.hasError) {
-                          return Container(
-                            padding: const EdgeInsets.all(18),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: SahlhaColors.borderSubtle,
-                              ),
-                            ),
-                            child: Column(
-                              children: [
-                                const Text(
-                                  'The example is unavailable right now.',
-                                ),
-                                TextButton(
-                                  onPressed: () => setState(
-                                    () => _example = widget.example(),
-                                  ),
-                                  child: const Text('Try again'),
-                                ),
-                              ],
-                            ),
-                          );
-                        }
-                        if (!snapshot.hasData) {
-                          return const LoadingState(
-                            message: 'Preparing your example...',
-                          );
-                        }
-                        final example = snapshot.data!;
-                        return AdaptiveExampleScreen(
-                          key: ValueKey(
-                            '${widget.materialId}:${widget.skillId}:${example.body.hashCode}',
-                          ),
-                          skill: skill,
-                          example: example,
-                        );
-                      },
-                    )
-                  else ...[
-                    // LEARN: avatar is the teacher. Single tap plays/pauses,
-                    // double tap changes speed, subtitles follow the audio,
-                    // full explanation stays available but collapsed.
-                    AvatarTeacher(
-                      key: ValueKey(
-                        'avatar-teacher:${widget.materialId}:${widget.skillId}',
-                      ),
-                      skillId: widget.skillId,
-                      materialId: widget.materialId,
-                      classroomId: widget.classroomId,
-                      supplementary: widget.supplementary,
-                      explanation: explanation,
+                  // LEARN: avatar is the teacher. Single tap plays/pauses,
+                  // double tap changes speed, subtitles follow the audio,
+                  // full explanation stays available but collapsed.
+                  AvatarTeacher(
+                    key: ValueKey(
+                      'avatar-teacher:${widget.materialId}:${widget.skillId}',
                     ),
-                    const SizedBox(height: 8),
-                    Center(
-                      child: TextButton.icon(
-                        onPressed: widget.help,
-                        icon: const Icon(Icons.lightbulb_outline_rounded),
-                        label: const Text('Help me'),
-                      ),
+                    skillId: widget.skillId,
+                    materialId: widget.materialId,
+                    classroomId: widget.classroomId,
+                    supplementary: widget.supplementary,
+                    explanation: explanation,
+                  ),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: TextButton.icon(
+                      onPressed: widget.help,
+                      icon: const Icon(Icons.lightbulb_outline_rounded),
+                      label: const Text('Help me'),
                     ),
-                  ],
+                  ),
                 ],
               ),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 14),
               child: SahlhaPrimaryButton(
-                label: _examples
-                    ? (skill.exerciseReady
-                          ? 'Continue to practice →'
-                          : 'Back to my path')
-                    : 'Continue',
-                onPressed: _examples ? _continueLearning : _showExamples,
+                label: 'Continue',
+                onPressed: _continueLearning,
               ),
             ),
           ],

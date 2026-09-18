@@ -43,33 +43,44 @@ class Player extends Fake implements AudioPlayer {
 }
 
 class AudioAdapter implements HttpClientAdapter {
-  final response = Completer<ResponseBody>();
+  final gate = Completer<void>();
+  List<int>? overrideBytes;
+  Map<String, List<String>>? overrideHeaders;
+  static const _wav = [
+    82,
+    73,
+    70,
+    70,
+    0,
+    0,
+    0,
+    0,
+    87,
+    65,
+    86,
+    69,
+    0,
+    0,
+  ];
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
-  ) => response.future;
+  ) async {
+    // Each fetch waits on the gate then returns a FRESH body: sharing one
+    // ResponseBody across concurrent downloads would let the first reader
+    // consume the stream and make the latest (wanted) request fail.
+    await gate.future;
+    final bytes = overrideBytes ?? List<int>.from(_wav);
+    return ResponseBody.fromBytes(bytes, 200, headers: overrideHeaders);
+  }
+
   @override
   void close({bool force = false}) {}
-  void finish() => response.complete(
-    ResponseBody.fromBytes([
-      82,
-      73,
-      70,
-      70,
-      0,
-      0,
-      0,
-      0,
-      87,
-      65,
-      86,
-      69,
-      0,
-      0,
-    ], 200),
-  );
+  void finish() {
+    if (!gate.isCompleted) gate.complete();
+  }
 }
 
 void main() {
@@ -148,12 +159,15 @@ void main() {
     final audio = AudioService(player, api);
     // MP3 (ID3) must be accepted, not rejected as "not audio".
     final start = audio.playUrl('http://localhost/lesson.mp3');
-    adapter.response.complete(
-      ResponseBody.fromBytes([
+    adapter
+      ..overrideBytes = [
         73, 68, 51, // ID3
         0, 0, 0, 0, 0, 0, 0, 0, 0,
-      ], 200, headers: {Headers.contentTypeHeader: ['audio/mpeg']}),
-    );
+      ]
+      ..overrideHeaders = {
+        Headers.contentTypeHeader: ['audio/mpeg'],
+      }
+      ..finish();
     expect(await start.timeout(const Duration(seconds: 3)), isNull);
     expect(player.sources, 1);
     expect(audio.state, ReadAloudState.playing);

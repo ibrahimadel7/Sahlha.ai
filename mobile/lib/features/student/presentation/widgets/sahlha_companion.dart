@@ -19,7 +19,7 @@ enum CompanionMood {
 }
 
 /// Friendly teal robot. Blinks, breathes, sways its antenna and gestures
-/// with its hands while speaking; only speech moves the mouth. Meaningful
+/// with its hand while speaking; only speech moves the mouth. Meaningful
 /// reactions only — no constant bouncing. Reduced motion stops the ticker
 /// completely.
 enum SahlhaAvatarState {
@@ -152,8 +152,8 @@ class _CompanionPainter extends CustomPainter {
   /// Natural blink from [BlinkScheduler] (randomized gaps, ~0.12s lids).
   final bool blink;
 
-  /// Circular-hand offsets from [GestureScheduler] in the painter's
-  /// 100-unit space; zero rests the hands against the body.
+  /// Circular-hand offset from [GestureScheduler] in the painter's
+  /// 100-unit space; zero rests the hand against the body.
   final HandOffsets hands;
   @override
   void paint(Canvas c, Size size) {
@@ -193,12 +193,11 @@ class _CompanionPainter extends CustomPainter {
       2.0,
       Paint()..color = const Color(0xFFFFF3D1),
     );
-    // Circular hands, resting against the body sides. While speaking the
-    // scheduler eases them through small teaching gestures; at rest the
-    // offsets decay to zero so the hands settle back onto the body.
+    // Single animated hand resting against the body side. While speaking the
+    // scheduler eases it through small teaching gestures; at rest the
+    // offset decays to zero so the hand settles back onto the body.
     // Drawn before the body so the inner edge tucks behind it.
     final handPaint = Paint()..color = const Color(0xFF0A7C76);
-    c.drawCircle(Offset(9 + hands.leftDx, 66 + hands.leftDy), 8.5, handPaint);
     c.drawCircle(Offset(91 + hands.rightDx, 68 + hands.rightDy), 8.5, handPaint);
     c.drawOval(
       const Rect.fromLTWH(9, 23, 81, 70),

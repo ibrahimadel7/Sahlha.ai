@@ -58,8 +58,9 @@ class BlinkScheduler {
 /// The three subtle teaching gestures, cycled with pseudo-random variety.
 enum GestureKind { alternate, bothUp, emphasis }
 
-/// Pixel offsets (in the painter's 100-unit space) for each circular hand.
-/// Zero means resting against the body.
+/// Pixel offset (in the painter's 100-unit space) for the single animated
+/// hand. Zero means resting against the body. The left channel is kept at
+/// zero for compatibility (the extra static hand was removed).
 class HandOffsets {
   const HandOffsets(this.leftDx, this.leftDy, this.rightDx, this.rightDy);
   final double leftDx;
@@ -180,17 +181,19 @@ class GestureScheduler {
   static double _lerp(double a, double b, double t) => a + (b - a) * t;
 
   /// Small teaching poses in the painter's 100-unit space (max ~7 units).
+  /// Single animated (right) hand only — the extra static hand was removed,
+  /// so the left channel always stays at rest.
   static HandOffsets _poseFor(GestureKind kind, bool alternateSide) {
     switch (kind) {
       case GestureKind.alternate:
-        // One hand slightly up, the other slightly down; the side swaps
+        // One animated hand slightly up or slightly down; the height swaps
         // each time this gesture recurs.
         return alternateSide
-            ? const HandOffsets(-2, -6, 2, 3)
-            : const HandOffsets(-2, 3, 2, -6);
+            ? const HandOffsets(0, 0, 2, 3)
+            : const HandOffsets(0, 0, 2, -6);
       case GestureKind.bothUp:
-        // Two-hand explanation gesture: both hands outward/upward.
-        return const HandOffsets(-3, -5, 3, -5);
+        // Explanation gesture: animated hand outward/upward.
+        return const HandOffsets(0, 0, 3, -5);
       case GestureKind.emphasis:
         // Small one-hand upward emphasis.
         return const HandOffsets(0, 0, 2, -7);

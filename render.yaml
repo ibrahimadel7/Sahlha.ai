@@ -1,0 +1,29 @@
+# Sahlha backend — Render free-tier blueprint (one-click deploy, $0).
+# Dashboard: New → Blueprint → select this repo. Render reads this file,
+# builds ./Dockerfile, and exposes https://<name>.onrender.com.
+# Then point the Flutter web build at that URL via --dart-define API_BASE_URL.
+services:
+  - type: web
+    name: sahlha-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # Web frontend origin (Cloudflare Pages). Must match the Pages URL.
+      - key: CORS_EXTRA_ORIGINS
+        value: https://sahlha.pages.dev
+      # Generated once by Render; JWT signing secret (never commit a value here).
+      - key: JWT_SECRET
+        generateValue: true
+      # Optional: fill in the Render dashboard after deploy (Security → Secrets).
+      # Without GROQ key the agent uses grounded fallback; without PEXELS key
+      # images return 503. The app works either way.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: PEXELS_API_KEY
+        sync: false
+      - key: LEGACY_DEV_API_ENABLED
+        value: true

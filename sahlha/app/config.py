@@ -33,7 +33,11 @@ class Settings(BaseSettings):
     legacy_dev_api_enabled: bool = True
 
     # ---- Auth (JWT) ----
-    # Prototype default; override via SAHLHA_JWT_SECRET in real deployments.
+    # Prototype default; override via the JWT_SECRET environment variable
+    # (pydantic-settings maps JWT_SECRET -> jwt_secret; no prefix).
+    # Production MUST set this (wrangler secret put JWT_SECRET) —
+    # /health reports jwt_configured so operators can verify arrival
+    # without ever exposing the value.
     jwt_secret: str = "sahlha-dev-secret-change-me-in-production-32"
     jwt_algorithm: str = "HS256"
     jwt_expires_minutes: int = 60 * 24 * 7  # 7 days (mobile prototype convenience)

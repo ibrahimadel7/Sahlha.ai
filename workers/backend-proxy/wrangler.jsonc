@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sahlha-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "containers": [
+    {
+      "class_name": "SahlhaBackend",
+      "image": "../../Dockerfile",
+      "max_instances": 2,
+      "image_build_context": "../../"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SAHLHA_BACKEND",
+        "class_name": "SahlhaBackend"
+      }
+    ]
+  },
+  "exports": {
+    "SahlhaBackend": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "vars": {
+    "DENSE_EMBEDDINGS_ENABLED": "true",
+    "EMBEDDING_WARMUP": "true",
+    "LEGACY_DEV_API_ENABLED": "true"
+  }
+}

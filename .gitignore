@@ -15,3 +15,11 @@ venv/
 edits.md
 edits2.md
 /testsss
+# --- Deployment / Cloudflare (local-only, never commit) ---
+.wrangler/
+workers/**/.wrangler/
+node_modules/
+workers/*/node_modules/
+workers/*/dist/
+.dev.vars
+.dev.vars.*

@@ -120,6 +120,11 @@ def health():
     return {"ok": True, "tts_configured": tts_mod.tts_available(),
             "images_configured": pexels_mod.pexels_available(),
             "llm_configured": llm_available(),
+            # True only when a non-default signing secret is active.
+            # Lets operators verify JWT_SECRET reached the container
+            # without ever exposing the value.
+            "jwt_configured": bool(_settings.jwt_secret) and _settings.jwt_secret
+            != "sahlha-dev-secret-change-me-in-production-32",
             "dense_embeddings_enabled": bool(_settings.dense_embeddings_enabled),
             "dense_embeddings_available": _dense_available,
             "reranker_enabled": bool(_settings.reranker_enabled),

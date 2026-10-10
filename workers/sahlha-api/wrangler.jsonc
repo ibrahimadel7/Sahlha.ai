@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sahlha-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sahlha-db",
+      "database_id": "d683787e-a9a5-4ab5-b344-f74ab84fc6d3"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "MEDIA",
+      "id": "27a1ff3abef241b3afa81b1d1c4374e9"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    "CORS_EXTRA_ORIGINS": "https://sahlha.pages.dev",
+    "EMBEDDING_MODEL": "@cf/baai/bge-m3",
+    "GROQ_MODEL": "openai/gpt-oss-120b",
+    "GROQ_BASE_URL": "https://api.groq.com/openai/v1",
+    "OPENROUTER_MODEL": "openai/gpt-4o-mini",
+    "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+    "JWT_EXPIRES_MINUTES": "10080"
+  }
+}

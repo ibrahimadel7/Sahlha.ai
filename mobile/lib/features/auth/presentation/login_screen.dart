@@ -61,7 +61,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SahlhaLogo(size: 52),
+                const SahlhaPreAuthBrand(width: 172),
                 const SizedBox(height: SahlhaSpacing.xl),
                 Text('Log in to Sahlha', style: text.headlineSmall),
                 const SizedBox(height: SahlhaSpacing.lg),

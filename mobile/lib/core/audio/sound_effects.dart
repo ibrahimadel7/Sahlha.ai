@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -95,7 +96,19 @@ class JustAudioSfxPlayer implements SfxPlayer {
   }
 
   @override
-  Future<void> setAsset(String assetPath) => _player.setAsset(assetPath);
+  Future<void> setAsset(String assetPath) {
+    if (kIsWeb) {
+      // just_audio's `asset:` scheme is not supported on web: setAsset
+      // always fails there (silently swallowed by the service). Flutter
+      // web serves bundled files over HTTP, so load the same file by URL.
+      // Uri.base.resolve keeps it absolute http(s), which is the scheme
+      // just_audio_web supports, and follows route subpaths correctly.
+      return _player.setAudioSource(
+        AudioSource.uri(Uri.base.resolve(assetPath)),
+      );
+    }
+    return _player.setAsset(assetPath);
+  }
 
   @override
   Future<void> setVolume(double volume) => _player.setVolume(volume);
@@ -306,6 +319,19 @@ class SoundEnabled extends _$SoundEnabled {
   Future<void> toggle() => setEnabled(!state);
 }
 
+/// Dedicated SFX player, intentionally separate from the TTS/[AudioService]
+/// player so short feedback can never stop, seek, or reconfigure the
+/// lesson voice.
+///
+/// Split into its own provider (instead of `AudioPlayer()` inline) so tests
+/// can override it with a fake: the real player needs platform channels.
+/// Lifecycle is owned by [soundEffects], which disposes the service (and
+/// its player) via its own `ref.onDispose`.
+@Riverpod(keepAlive: true)
+SfxPlayer sfxPlayer(Ref ref) {
+  return JustAudioSfxPlayer(AudioPlayer());
+}
+
 /// The single shared sound-effects service. Uses its own [AudioPlayer]
 /// (never the TTS player's) and disposes the player with the provider.
 ///
@@ -317,9 +343,9 @@ class SoundEnabled extends _$SoundEnabled {
 /// for the whole app session.
 @Riverpod(keepAlive: true)
 SoundEffectsService soundEffects(Ref ref) {
-  final player = AudioPlayer();
+  final player = ref.read(sfxPlayerProvider);
   final service = SoundEffectsService(
-    JustAudioSfxPlayer(player),
+    player,
     enabled: ref.read(soundEnabledProvider),
   );
   // Sync the global toggle without recreating the player: `listen`

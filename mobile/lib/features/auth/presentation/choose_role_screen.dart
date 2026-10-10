@@ -26,6 +26,8 @@ class _ChooseRoleScreenState extends State<ChooseRoleScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              const SahlhaPreAuthBrand(width: 148),
+              const SizedBox(height: SahlhaSpacing.lg),
               _RoleCard(
                 role: 'student',
                 title: 'Student',

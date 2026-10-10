@@ -488,6 +488,133 @@ class SahlhaLogo extends StatelessWidget {
   }
 }
 
+/// Full Sahlha lockup from the brand PNG (robot + "Sahlha" wordmark).
+///
+/// Expects `assets/logo/sahlha_logo.png` (transparent PNG, ~1024px wide).
+/// Falls back to the vector [SahlhaLogo] if the PNG is missing so the app
+/// never crashes before the asset is added.
+class SahlhaFullLogo extends StatelessWidget {
+  const SahlhaFullLogo({super.key, this.width = 220, this.fit = BoxFit.contain});
+
+  final double width;
+  final BoxFit fit;
+
+  static const _pngPath = 'assets/logo/sahlha_logo.png';
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      _pngPath,
+      width: width,
+      fit: fit,
+      errorBuilder: (_, _, _) => SahlhaLogo(
+        size: width * 0.32,
+        showWordmark: true,
+      ),
+    );
+  }
+}
+
+/// Robot-only mark from the brand PNG (no wordmark).
+///
+/// Expects `assets/logo/sahlha_icon.png`. Useful for avatars, splash marks,
+/// and anywhere the full lockup would be too small to read.
+class SahlhaRobotMark extends StatelessWidget {
+  const SahlhaRobotMark({super.key, this.size = 84, this.borderRadius = 24});
+
+  final double size;
+  final double borderRadius;
+
+  static const _pngPath = 'assets/logo/sahlha_icon.png';
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: Image.asset(
+        _pngPath,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => SvgPicture.asset(
+          'assets/logo/sahlha_mark.svg',
+          width: size,
+          height: size,
+        ),
+      ),
+    );
+  }
+}
+
+/// Shared pre-auth brand lockup using the new Sahlha logo.
+///
+/// Used on splash, onboarding, role, login, and register ONLY.
+/// Prominent but not oversized; fades + gently scales in on first build.
+/// Keeps the app palette and typography untouched.
+class SahlhaPreAuthBrand extends StatelessWidget {
+  const SahlhaPreAuthBrand({
+    super.key,
+    this.width = 176,
+    this.showTagline = false,
+    this.alignment = Alignment.center,
+    this.animationDuration = const Duration(milliseconds: 550),
+  });
+
+  final double width;
+  final bool showTagline;
+  final Alignment alignment;
+  final Duration animationDuration;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Align(
+      alignment: alignment,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: animationDuration,
+        curve: Curves.easeOutCubic,
+        builder: (context, value, child) {
+          return Opacity(
+            opacity: value,
+            child: Transform.scale(
+              scale: 0.94 + (0.06 * value),
+              child: child,
+            ),
+          );
+        },
+        child: Semantics(
+          image: true,
+          label: 'Sahlha logo',
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SahlhaFullLogo(width: width),
+              if (showTagline) ...[
+                const SizedBox(height: SahlhaSpacing.sm),
+                Text(
+                  'Same curriculum.',
+                  style: text.titleMedium?.copyWith(
+                    color: SahlhaColors.muted,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                Text(
+                  'Different path to mastery.',
+                  style: text.titleMedium?.copyWith(
+                    color: SahlhaColors.muted,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // -------------------------------------------------------------- path nodes
 enum PathNodeState { completed, current, upcoming, locked }
 

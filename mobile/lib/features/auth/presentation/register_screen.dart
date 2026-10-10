@@ -78,6 +78,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const SahlhaPreAuthBrand(width: 172),
+                const SizedBox(height: SahlhaSpacing.xl),
                 Text('Create your account', style: text.headlineSmall),
                 const SizedBox(height: SahlhaSpacing.lg),
                 TextFormField(

@@ -225,7 +225,12 @@ void main() {
 
   group('provider lifecycle (regression: autoDispose = total silence)', () {
     test('toggle reaches the shared service without recreating it', () async {
-      final container = ProviderContainer();
+      // The real audioplayers AudioPlayer needs a Flutter binding +
+      // platform channels, so the player provider is overridden with a
+      // fake: this test targets Riverpod wiring, not native playback.
+      final container = ProviderContainer(
+        overrides: [sfxPlayerProvider.overrideWithValue(FakeSfxPlayer())],
+      );
       addTearDown(container.dispose);
       final first = container.read(soundEffectsProvider);
       expect(first.enabled, isTrue);

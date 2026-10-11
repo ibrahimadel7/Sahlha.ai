@@ -20,13 +20,25 @@ app.use("*", async (c, next) => {
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     maxAge: 86400,
   });
-  await mw(c, next);
+  const setHardening = (set: (key: string, value: string) => void) => {
+    set("X-Content-Type-Options", "nosniff");
+    set("X-Frame-Options", "SAMEORIGIN");
+    set("Referrer-Policy", "no-referrer");
+    set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    set("Strict-Transport-Security", "max-age=31536000");
+  };
+  // hono's cors short-circuits preflight (OPTIONS) with a 204 Response and
+  // never calls next(). The previous code discarded that return value, so
+  // every preflight fell through to notFound (404) and browsers blocked
+  // the real request. Return it.
+  const preflight = await mw(c, next);
+  if (preflight) {
+    // Baseline hardening headers (API serves JSON/bytes only; no framing needed).
+    setHardening((k, v) => preflight.headers.set(k, v));
+    return preflight;
+  }
   // Baseline hardening headers (API serves JSON/bytes only; no framing needed).
-  c.header("X-Content-Type-Options", "nosniff");
-  c.header("X-Frame-Options", "SAMEORIGIN");
-  c.header("Referrer-Policy", "no-referrer");
-  c.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  c.header("Strict-Transport-Security", "max-age=31536000");
+  setHardening((k, v) => c.header(k, v));
 });
 
 app.get("/", (c) => c.json({ service: "sahlha", status: "ok", tier: "workers-native" }));

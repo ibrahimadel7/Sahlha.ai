@@ -18,6 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Fail fast with an actionable message when the Cloudflare credentials
+      # are not configured (repo Settings → Secrets and variables → Actions).
+      # Without these, wrangler fails with a generic auth error.
+      - name: Check Cloudflare secrets
+        run: |
+          missing=0
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then echo "::error::CLOUDFLARE_API_TOKEN secret is not set (repo Settings → Secrets and variables → Actions → New repository secret)."; missing=1; fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then echo "::error::CLOUDFLARE_ACCOUNT_ID secret is not set (Cloudflare dashboard → account → copy ID; same Secrets page)."; missing=1; fi
+          exit $missing
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20

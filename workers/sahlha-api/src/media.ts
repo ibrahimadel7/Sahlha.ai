@@ -122,7 +122,12 @@ async function openrouterTts(env: Env, text: string): Promise<{ bytes: Uint8Arra
           try {
             const r = await fetch(`${(env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "")}/audio/speech`, {
               method: "POST",
-              headers: { Authorization: `Bearer ${env.OPENROUTER_API_KEY}`, "Content-Type": "application/json" },
+              headers: {
+                Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://sahlha.pages.dev",
+                "X-Title": "Sahlha",
+              },
               body: JSON.stringify({ model, input: ch, voice: env.OPENROUTER_TTS_VOICE || "alloy", response_format: format }),
               signal: ctrl.signal,
             });
@@ -205,13 +210,30 @@ export async function skillAudio(
   }
   if (!sk || !explanation) throw Object.assign(new Error("No finalized explanation for this skill yet"), { status: 404 });
   const text = `${sk.name || skillId}. ${explanation}`;
-  let got = await groqTts(env, text, voice || "");
-  if (!got) {
-    console.error("skillAudio: groqTts returned null, trying OpenRouter");
-    got = await openrouterTts(env, text);
+  // OpenRouter-first (TTS_PRIMARY=groq restores Groq-first). Each provider
+  // gets a chance: throws are converted to null so the other is always
+  // tried before giving up with 503.
+  const ttsPrimary = (env.TTS_PRIMARY || "openrouter").toLowerCase() === "groq" ? "groq" : "openrouter";
+  const ttsSynth = {
+    groq: () => groqTts(env, text, voice || ""),
+    openrouter: () => openrouterTts(env, text),
+  };
+  const ttsOrder = ttsPrimary === "groq" ? (["groq", "openrouter"] as const) : (["openrouter", "groq"] as const);
+  let got: { bytes: Uint8Array; format: string } | null = null;
+  let lastTts = ttsOrder[0];
+  for (const p of ttsOrder) {
+    lastTts = p;
+    try {
+      got = await ttsSynth[p]();
+    } catch (e) {
+      console.error(`skillAudio: ${p} TTS threw (${e instanceof Error ? e.message : String(e)}), trying next`);
+      got = null;
+    }
+    if (got) break;
+    console.error(`skillAudio: ${p} TTS returned null, trying next`);
   }
   if (!got) {
-    console.error("skillAudio: all TTS providers returned null");
+    console.error(`skillAudio: all TTS providers failed (last: ${lastTts})`);
     throw Object.assign(new Error("TTS unavailable"), { status: 503 });
   }
   if (!looksLikeAudio(got.bytes)) {

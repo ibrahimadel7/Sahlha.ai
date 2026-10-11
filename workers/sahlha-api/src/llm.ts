@@ -1,11 +1,15 @@
 import type { Env } from "./env";
 
 // ---------------------------------------------------------------------------
-// Provider chain: Groq (OpenAI-compatible fetch) -> one OpenRouter failover
-// on retryable errors -> deterministic grounded fallbacks. Mirrors
-// sahlha/app/agent/llm.py behavior; temperature 0.4, 2000 tokens,
-// json_object response format, 60s timeout.
+// Provider chain: OpenRouter primary -> Groq failover on retryable errors
+// (or the reverse when LLM_PRIMARY=groq) -> deterministic grounded
+// fallbacks. Mirrors sahlha/app/agent/llm.py behavior; temperature 0.4,
+// 2000 tokens, json_object response format, 60s timeout.
 // ---------------------------------------------------------------------------
+
+export function primaryLlm(env: Env): "groq" | "openrouter" {
+  return (env.LLM_PRIMARY || "openrouter").toLowerCase() === "groq" ? "groq" : "openrouter";
+}
 
 export function resolveProvider(env: Env): { provider: string; key: string; model: string } {
   if (env.GROQ_API_KEY) return { provider: "groq", key: env.GROQ_API_KEY, model: env.GROQ_MODEL || "openai/gpt-oss-120b" };
@@ -42,7 +46,9 @@ export function isRetryable(msg: string, status?: number): boolean {
   return false;
 }
 
-async function chatOnce(baseUrl: string, key: string, model: string, system: string, user: string): Promise<string> {
+async function chatOnce(
+  baseUrl: string, key: string, model: string, system: string, user: string, extraHeaders?: Record<string, string>,
+): Promise<string> {
   // Long timeout: reasoning models (gpt-oss) can think for a while on big
   // prompts. Waiting on fetch does not consume CPU-time budget.
   const ctrl = new AbortController();
@@ -50,7 +56,7 @@ async function chatOnce(baseUrl: string, key: string, model: string, system: str
   try {
     const r = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...(extraHeaders || {}) },
       body: JSON.stringify({
         model,
         messages: [
@@ -75,37 +81,48 @@ async function chatOnce(baseUrl: string, key: string, model: string, system: str
 }
 
 export async function callLlm(env: Env, system: string, user: string): Promise<{ text: string; backend: string }> {
-  const { provider, key, model } = resolveProvider(env);
-  if (provider === "groq") {
-    try {
-      const text = await chatOnce(env.GROQ_BASE_URL || "https://api.groq.com/openai/v1", key, model, system, user);
-      return { text, backend: "groq" };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const m = /error code:\s*(\d+)/i.exec(msg);
-      const status = m ? parseInt(m[1], 10) : undefined;
-      if (isRetryable(msg, status) && env.OPENROUTER_API_KEY) {
-        const text = await chatOnce(
-          env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
-          env.OPENROUTER_API_KEY,
-          env.OPENROUTER_MODEL || "openai/gpt-4o-mini",
-          system,
-          user,
-        );
-        return { text, backend: "openrouter" };
-      }
-      throw e;
+  // OpenRouter-first (LLM_PRIMARY=groq restores Groq-first). The other
+  // provider is automatic backup on retryable failures.
+  const order = primaryLlm(env) === "groq" ? (["groq", "openrouter"] as const) : (["openrouter", "groq"] as const);
+  const conf = {
+    groq: {
+      base: env.GROQ_BASE_URL || "https://api.groq.com/openai/v1",
+      key: env.GROQ_API_KEY || "",
+      model: env.GROQ_MODEL || "openai/gpt-oss-120b",
+      extra: undefined as Record<string, string> | undefined,
+    },
+    openrouter: {
+      base: env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
+      key: env.OPENROUTER_API_KEY || "",
+      model: env.OPENROUTER_MODEL || "openai/gpt-4o-mini",
+      // OpenRouter attribution headers (recommended for app identification).
+      extra: { "HTTP-Referer": "https://sahlha.pages.dev", "X-Title": "Sahlha" },
+    },
+  };
+  const usable = order.filter((p) => conf[p].key);
+  if (usable.length === 0) {
+    if (env.OPENAI_API_KEY) {
+      const text = await chatOnce("https://api.openai.com/v1", env.OPENAI_API_KEY, "gpt-4o-mini", system, user);
+      return { text, backend: "openai" };
     }
+    throw new Error("no-llm-configured");
   }
-  if (provider === "openrouter") {
-    const text = await chatOnce(env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1", key, model, system, user);
-    return { text, backend: "openrouter" };
+  const [first, second] = usable;
+  const c1 = conf[first];
+  try {
+    const text = await chatOnce(c1.base, c1.key, c1.model, system, user, c1.extra);
+    return { text, backend: first };
+  } catch (e) {
+    if (!second) throw e;
+    const msg = e instanceof Error ? e.message : String(e);
+    const m = /error code:\s*(\d+)/i.exec(msg);
+    const status = m ? parseInt(m[1], 10) : undefined;
+    if (!isRetryable(msg, status)) throw e;
+    console.error(`callLlm: ${first} failed (${msg.slice(0, 160)}), failing over to ${second}`);
+    const c2 = conf[second];
+    const text = await chatOnce(c2.base, c2.key, c2.model, system, user, c2.extra);
+    return { text, backend: second };
   }
-  if (provider === "openai") {
-    const text = await chatOnce("https://api.openai.com/v1", key, model, system, user);
-    return { text, backend: "openai" };
-  }
-  throw new Error("no-llm-configured");
 }
 
 export function extractJsonArray(text: string): unknown[] {

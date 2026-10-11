@@ -28,6 +28,8 @@
     "GROQ_BASE_URL": "https://api.groq.com/openai/v1",
     "OPENROUTER_MODEL": "openai/gpt-4o-mini",
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
-    "JWT_EXPIRES_MINUTES": "10080"
+    "JWT_EXPIRES_MINUTES": "10080",
+    "LLM_PRIMARY": "openrouter",
+    "TTS_PRIMARY": "openrouter"
   }
 }

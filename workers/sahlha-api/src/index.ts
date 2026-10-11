@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./env";
 import { DEV_JWT_SECRET, corsOrigins } from "./util";
-import { llmAvailable } from "./llm";
+import { llmAvailable, primaryLlm } from "./llm";
 import { authRoutes } from "./routes/auth";
 import { classroomRoutes } from "./routes/classrooms";
 import { materialRoutes } from "./routes/materials";
@@ -51,6 +51,8 @@ app.get("/health", (c) => {
     tts_configured: !!(c.env.GROQ_API_KEY || c.env.OPENROUTER_API_KEY),
     images_configured: !!c.env.PEXELS_API_KEY,
     llm_configured: llmAvailable(c.env),
+    llm_primary: primaryLlm(c.env),
+    tts_primary: (c.env.TTS_PRIMARY || "openrouter").toLowerCase() === "groq" ? "groq" : "openrouter",
     jwt_configured: !!jwt && jwt !== DEV_JWT_SECRET,
     embeddings_model: c.env.EMBEDDING_MODEL || "@cf/baai/bge-m3",
     ocr_available: false,

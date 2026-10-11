@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { q1 } from "./db";
 import { splitSentences } from "./llm";
+import { ensureScopeExplanations } from "./agent";
 
 // ---------------------------------------------------------------------------
 // TTS: Groq Orpheus -> OpenRouter fallback, KV-cached bytes.
@@ -23,7 +24,10 @@ function splitForTts(text: string, max = 900): string[] {
 }
 
 async function groqTts(env: Env, text: string, voice: string): Promise<{ bytes: Uint8Array; format: string } | null> {
-  if (!env.GROQ_API_KEY) return null;
+  if (!env.GROQ_API_KEY) {
+    console.error("groqTts: no GROQ_API_KEY");
+    return null;
+  }
   const chunks = splitForTts(text);
   const parts: Uint8Array[] = [];
   for (const ch of chunks) {
@@ -43,11 +47,15 @@ async function groqTts(env: Env, text: string, voice: string): Promise<{ bytes: 
       });
       if (!r.ok) {
         const msg = await r.text().catch(() => "");
+        console.error(`groqTts ${r.status}: ${msg.slice(0, 300)}`);
         const retry = /429|5\d\d|timeout|overloaded|capacity/i.test(` ${r.status} ${msg}`);
         if (retry) return null; // fall through to OpenRouter
         throw new Error(`TTS failed: ${r.status}`);
       }
       parts.push(new Uint8Array(await r.arrayBuffer()));
+    } catch (e) {
+      console.error(`groqTts fetch failed: ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
     } finally {
       clearTimeout(t);
     }
@@ -96,7 +104,10 @@ function stitchWav(parts: Uint8Array[]): Uint8Array {
 }
 
 async function openrouterTts(env: Env, text: string): Promise<{ bytes: Uint8Array; format: string } | null> {
-  if (!env.OPENROUTER_API_KEY) return null;
+  if (!env.OPENROUTER_API_KEY) {
+    console.error("openrouterTts: no OPENROUTER_API_KEY");
+    return null;
+  }
   const chunks = splitForTts(text);
   const models = [env.OPENROUTER_TTS_MODEL || "fish-audio/s2.1-pro-free:free", "openai/gpt-4o-mini-tts"];
   const parts: Uint8Array[] = [];
@@ -115,8 +126,15 @@ async function openrouterTts(env: Env, text: string): Promise<{ bytes: Uint8Arra
               body: JSON.stringify({ model, input: ch, voice: env.OPENROUTER_TTS_VOICE || "alloy", response_format: format }),
               signal: ctrl.signal,
             });
-            if (r.status === 404) continue; // try next candidate
-            if (!r.ok) throw new Error(`TTS failed: ${r.status}`);
+            if (r.status === 404) {
+              console.error(`openrouterTts ${model}/${format}: 404`);
+              continue; // try next candidate
+            }
+            if (!r.ok) {
+              const msg = await r.text().catch(() => "");
+              console.error(`openrouterTts ${model}/${format}: ${r.status} ${msg.slice(0, 300)}`);
+              throw new Error(`TTS failed: ${r.status}`);
+            }
             parts.push(new Uint8Array(await r.arrayBuffer()));
             fmt = format;
             done = true;
@@ -124,7 +142,8 @@ async function openrouterTts(env: Env, text: string): Promise<{ bytes: Uint8Arra
           } finally {
             clearTimeout(t);
           }
-        } catch {
+        } catch (e) {
+          console.error(`openrouterTts ${model}/${format} fetch failed: ${e instanceof Error ? e.message : String(e)}`);
           continue;
         }
       }
@@ -173,11 +192,32 @@ export async function skillAudio(
     await env.MEDIA.delete(key).catch(() => null);
   }
   const sk = await q1<Record<string, unknown>>(env.DB, "SELECT name, explanation FROM skills WHERE course_id = ? AND lesson_id = ? AND skill_id = ?", courseId, lessonId, skillId);
-  if (!sk || !String(sk.explanation || "")) throw Object.assign(new Error("No finalized explanation for this skill yet"), { status: 404 });
-  const text = `${sk.name || skillId}. ${sk.explanation}`;
+  let explanation = sk ? String(sk.explanation || "") : "";
+  if (!explanation) {
+    // Backfill path: banks were approved but skill explanations were never
+    // generated (only extract-skills generated them). Heal best-effort, then
+    // re-read; still missing => honest 404 below.
+    try {
+      await ensureScopeExplanations(env, courseId, lessonId);
+    } catch { /* fall through to the 404 below */ }
+    const again = await q1<Record<string, unknown>>(env.DB, "SELECT name, explanation FROM skills WHERE course_id = ? AND lesson_id = ? AND skill_id = ?", courseId, lessonId, skillId);
+    if (again) explanation = String(again.explanation || "");
+  }
+  if (!sk || !explanation) throw Object.assign(new Error("No finalized explanation for this skill yet"), { status: 404 });
+  const text = `${sk.name || skillId}. ${explanation}`;
   let got = await groqTts(env, text, voice || "");
-  if (!got) got = await openrouterTts(env, text);
-  if (!got || !looksLikeAudio(got.bytes)) throw Object.assign(new Error("TTS unavailable"), { status: 503 });
+  if (!got) {
+    console.error("skillAudio: groqTts returned null, trying OpenRouter");
+    got = await openrouterTts(env, text);
+  }
+  if (!got) {
+    console.error("skillAudio: all TTS providers returned null");
+    throw Object.assign(new Error("TTS unavailable"), { status: 503 });
+  }
+  if (!looksLikeAudio(got.bytes)) {
+    console.error(`skillAudio: provider returned ${got.bytes.length} non-audio bytes`);
+    throw Object.assign(new Error("TTS unavailable"), { status: 503 });
+  }
   await env.MEDIA.put(key, got.bytes.slice().buffer as ArrayBuffer, { expirationTtl: 60 * 60 * 24 * 30 });
   return { bytes: got.bytes, format: got.format, cached: false };
 }

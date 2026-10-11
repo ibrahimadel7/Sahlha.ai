@@ -218,6 +218,21 @@ export async function explainLesson(env: Env, courseId: string, lessonId: string
 }
 
 // ---------------------------------------------------------------------------
+// Lazy backfill: some scopes have skill rows / approved banks but no
+// explanations (the bank pipeline never generated them — only the
+// extract-skills route did). Student read paths call this best-effort so the
+// first request heals the data instead of 404ing. Both explain calls skip
+// anything already present, so this is a no-op for healthy scopes.
+// ---------------------------------------------------------------------------
+
+export async function ensureScopeExplanations(env: Env, courseId: string, lessonId: string): Promise<void> {
+  const missingSkill = await q1(env.DB, "SELECT id FROM skills WHERE course_id = ? AND lesson_id = ? AND (explanation IS NULL OR explanation = '') LIMIT 1", courseId, lessonId);
+  if (missingSkill) await explainSkills(env, courseId, lessonId, false);
+  const missingLesson = await q1<Record<string, unknown>>(env.DB, "SELECT id, explanation FROM lesson_explanations WHERE course_id = ? AND lesson_id = ?", courseId, lessonId);
+  if (!missingLesson || !String(missingLesson.explanation || "")) await explainLesson(env, courseId, lessonId, false);
+}
+
+// ---------------------------------------------------------------------------
 // Question banks
 // ---------------------------------------------------------------------------
 

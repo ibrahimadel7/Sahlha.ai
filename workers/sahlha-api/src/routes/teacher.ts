@@ -7,6 +7,7 @@ import { ownedBank, teacherClassroom, toErr } from "../guards";
 import { checkRate } from "../ratelimit";
 import { classroomMastery, studentGrades, teacherOverview } from "../assess";
 import { generateQuestionBank, generateLessonBanks } from "../agent";
+import { ensureScopeExplanations } from "../agent";
 import { QUESTION_SYSTEM, fallbackCritique, fallbackQuestions, generateQuestionsLlm } from "../llm";
 import { attachQuestionEvidence, retrieveLesson, searchChunks, validateQuestionGrounding } from "../rag";
 import type { Chunk } from "../llm";
@@ -89,6 +90,13 @@ teacherRoutes.post("/banks/:id/approve", requireRole("teacher"), async (c) => {
   const bank = await ownedBank(c, P(c, "id"), getUser(c)).catch(() => null);
   if (!bank) return err(c, 404, "Question bank not found");
   await run(c.env.DB, "UPDATE question_banks SET status = 'approved', updated_at = ? WHERE id = ?", nowIso(), String(bank.id));
+  // Approval is the point of no return for student content: make sure skill
+  // + lesson explanations exist (the bank pipeline never generated them, so
+  // scopes approved without extract-skills had empty lessons and 404 audio).
+  // Best-effort — approval itself already succeeded.
+  try {
+    await ensureScopeExplanations(c.env, String(bank.course_id), String(bank.lesson_id));
+  } catch { /* explanations can backfill on first student read */ }
   const fresh = (await q1<Record<string, unknown>>(c.env.DB, "SELECT * FROM question_banks WHERE id = ?", String(bank.id)))!;
   return c.json(await bankTeacherDict(c.env, fresh));
 });

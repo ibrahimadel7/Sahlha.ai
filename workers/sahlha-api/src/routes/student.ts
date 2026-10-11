@@ -25,6 +25,7 @@ import {
   scopeForMaterial,
 } from "../assess";
 import { envelopeForAudio, skillAudio, skillImage } from "../media";
+import { ensureScopeExplanations } from "../agent";
 
 async function resolveScope(env: Env, studentId: string, materialId: string, classroomId?: string): Promise<[string, string]> {
   const mat = await q1<Record<string, unknown>>(env.DB, "SELECT * FROM learning_materials WHERE id = ?", materialId);
@@ -122,6 +123,13 @@ studentRoutes.get("/skills/:skillId", requireRole("student"), async (c) => {
   void supplementary;
   try {
     const [courseId, lessonId] = await resolveScope(c.env, me.id, materialId, classroomId);
+    // Best-effort backfill: approved banks can exist while skill/lesson
+    // explanations were never generated (only extract-skills generated
+    // them). Heal here so the lesson screen is complete; failures fall
+    // through to whatever content already exists.
+    try {
+      await ensureScopeExplanations(c.env, courseId, lessonId);
+    } catch { /* serve existing content */ }
     const bundle = await skillBundle(c.env, me.id, courseId, lessonId, P(c, "skillId"));
     if (classroomId) {
       const room = await q1<Record<string, unknown>>(c.env.DB, "SELECT subject FROM classrooms WHERE id = ?", classroomId);

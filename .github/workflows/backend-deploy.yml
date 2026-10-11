@@ -44,10 +44,17 @@ jobs:
         working-directory: workers/backend-proxy
 
       - name: Deploy to Cloudflare Containers
+        # Free-tier accounts cannot push container images (the API returns
+        # "Deploying containers requires the Workers Paid plan"). The proxy
+        # worker (src/index.ts) detects the missing container at runtime and
+        # serves traffic via its FALLBACK_API service binding to sahlha-api,
+        # so deploy the worker WITHOUT building containers here.
+        # After upgrading to Workers Paid, change the command back to
+        # `deploy` so the Dockerfile image is built, pushed and rolled out.
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/backend-proxy
-          command: deploy
+          command: deploy --containers-rollout none
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}

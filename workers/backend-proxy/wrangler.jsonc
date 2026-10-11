@@ -19,6 +19,12 @@
       }
     ]
   },
+  "services": [
+    {
+      "binding": "FALLBACK_API",
+      "service": "sahlha-api"
+    }
+  ],
   "exports": {
     "SahlhaBackend": {
       "type": "durable-object",
@@ -28,6 +34,17 @@
   "vars": {
     "DENSE_EMBEDDINGS_ENABLED": "true",
     "EMBEDDING_WARMUP": "true",
-    "LEGACY_DEV_API_ENABLED": "true"
+    // Hardened production: legacy dev API OFF (pre-JWT routes must not be
+    // public), interactive docs OFF, boot refuses the dev JWT default
+    // (set a real JWT_SECRET via `wrangler secret put JWT_SECRET`), HSTS ON.
+    // Never put secrets in vars — use `wrangler secret put`.
+    "LEGACY_DEV_API_ENABLED": "false",
+    "DOCS_ENABLED": "false",
+    "REQUIRE_CONFIGURED_JWT": "true",
+    "HSTS_ENABLED": "true",
+    // Free-tier fallback: Containers need the Workers Paid plan. When no
+    // container image is assigned, the proxy forwards to this native API
+    // (runs on free tier) instead of returning 500.
+    "FALLBACK_API_URL": "https://sahlha-api.ibrahimadel2810.workers.dev"
   }
 }
